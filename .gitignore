@@ -1,0 +1,31 @@
+# ── Python ──────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+
+# ── Virtual environment ────────────────────────────────────────────
+venv/
+.venv/
+
+data/*.db
+data/settings.json
+
+# ── Calibration reports (customer data — must not be pushed) ───────
+reports/*.json
+
+# ── PyInstaller / build output ──────────────────────────────────────
+build/
+dist/
+*.spec
+
+# ── Logs ─────────────────────────────────────────────────────────────
+*.log
+
+# ── Editor / IDE ─────────────────────────────────────────────────────
+.vscode/
+.idea/
+
+# ── OS files ─────────────────────────────────────────────────────────
+Thumbs.db
+.DS_Store
+internal_reference/
