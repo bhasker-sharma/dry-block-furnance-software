@@ -1,24 +1,3 @@
-"""
-Settings Screen — serial port parameters, calibrator range, CMC, setpoints,
-Master RTD, and calibration timing rules.
-
-What was removed and why:
-  - Protocol Commands section: command codes come from the hardware datasheet
-    and are hardcoded in usb_comm.py. Exposing them in the UI is a risk —
-    a wrong CMD code would break communication silently.
-  - Setpoint Order: always ascending (SRS §5.4, engine already sorts).
-  - Pass/Fail Decision: removed entirely — the software only records
-    temperatures now, it does not judge them.
-  - Target Tolerance: stabilization no longer uses a tolerance band; it is
-    purely fluctuation-based (see Manufacturer Settings).
-
-What moved here from the per-calibration Setup screen, and why:
-  - Master RTD: the lab's reference standard rarely changes between
-    calibrations, unlike the UUT, so it belongs in lab-wide settings.
-  - Setpoints: the dry block's calibration plan is a lab-level decision,
-    validated against the calibrator's range — also lab-wide, not
-    re-entered every session.
-"""
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox,
     QLineEdit, QGroupBox, QFormLayout, QScrollArea, QFrame,
@@ -85,11 +64,7 @@ class SettingsScreen(QWidget):
         cv.setSpacing(16)
         cv.setAlignment(Qt.AlignTop)
 
-        row1 = QHBoxLayout()
-        row1.setSpacing(16)
-        row1.addWidget(self._build_serial_card(), 1)
-        row1.addWidget(self._build_rules_card(), 1)
-        cv.addLayout(row1)
+        cv.addWidget(self._build_serial_card())
 
         row2 = QHBoxLayout()
         row2.setSpacing(16)
@@ -156,36 +131,6 @@ class SettingsScreen(QWidget):
         fixed.setStyleSheet('font-size:11px;color:#a0aec0;padding:4px 0;')
         fixed.setWordWrap(True)
         form.addRow('', fixed)
-
-        return box
-
-    def _build_rules_card(self) -> QGroupBox:
-        box = QGroupBox('Calibration Timing Rules')
-        box.setObjectName('card')
-        box.setStyleSheet('QGroupBox{border:1px solid #d1d9e6;}')
-        form = QFormLayout(box)
-        form.setVerticalSpacing(10)
-        form.setHorizontalSpacing(14)
-
-        self._stab_min = QLineEdit('10')
-        self._stab_min.setPlaceholderText('minutes')
-        form.addRow('Stabilization Time (min)', self._stab_min)
-
-        lbl = QLabel('Ascending always')
-        lbl.setStyleSheet(
-            'color:#6b7a90;font-size:12px;background:#f7f9fc;'
-            'border-radius:5px;padding:4px 8px;'
-        )
-        lbl.setToolTip('Setpoints are always sent in ascending temperature order.')
-        form.addRow('Setpoint Order', lbl)
-
-        note = QLabel(
-            'Fine-grained stabilization tuning (max time, volatility window, '
-            'fluctuation limit) lives in Manufacturer Settings below.'
-        )
-        note.setStyleSheet('font-size:11px;color:#a0aec0;padding-top:4px;')
-        note.setWordWrap(True)
-        form.addRow('', note)
 
         return box
 
@@ -261,6 +206,14 @@ class SettingsScreen(QWidget):
         self._sp_count_label = QLabel('0 / 10')
         self._sp_count_label.setStyleSheet('font-size:11px;color:#6b7a90;')
         v.addWidget(self._sp_count_label)
+
+        order_note = QLabel('Setpoint Order: Ascending always — setpoints are always sent in ascending temperature order.')
+        order_note.setStyleSheet(
+            'color:#6b7a90;font-size:11px;background:#f7f9fc;'
+            'border-radius:5px;padding:4px 8px;'
+        )
+        order_note.setWordWrap(True)
+        v.addWidget(order_note)
 
         self._sp_container = QVBoxLayout()
         self._sp_container.setSpacing(5)
@@ -514,7 +467,6 @@ class SettingsScreen(QWidget):
             }
             settings['stab_min'] = max_stab.value()
             self._store.save(settings)
-            self._stab_min.setText(str(max_stab.value()))
         timer.stop()
 
     # ------------------------------------------------------------------
@@ -529,8 +481,6 @@ class SettingsScreen(QWidget):
         self._baud.setCurrentText(str(serial.get('baud', 9600)))
         self._timeout.setText(str(serial.get('timeout_ms', 1000)))
         self._retry.setText(str(serial.get('retry', 3)))
-
-        self._stab_min.setText(str(s.get('stab_min', 10.0)))
 
         rng = s.get('calibrator_range', {})
         if rng.get('min') is not None:
@@ -556,12 +506,6 @@ class SettingsScreen(QWidget):
         self._update_setpoints_lock()
 
     def _on_save(self) -> None:
-        try:
-            stab = float(self._stab_min.text())
-        except ValueError:
-            QMessageBox.warning(self, 'Invalid Input', 'Stabilization time must be a number.')
-            return
-
         if self._range_min.value() >= self._range_max.value():
             QMessageBox.warning(self, 'Invalid Range', 'Calibrator minimum must be less than maximum.')
             return
@@ -597,7 +541,6 @@ class SettingsScreen(QWidget):
                 'timeout_ms': int(self._timeout.text() or '1000'),
                 'retry': int(self._retry.text() or '3'),
             },
-            'stab_min': stab,
             'calibrator_range': {'min': rmin, 'max': rmax},
             'cmc_enabled': cmc_enabled,
             'cmc_points': cmc_points,
@@ -611,10 +554,6 @@ class SettingsScreen(QWidget):
                 'tag_number':      '',
             },
         }
-        existing.setdefault('manufacturer', {})
-        settings['manufacturer'] = existing.get('manufacturer', {})
-        settings['manufacturer']['max_stabilization_min'] = stab
-
         self._store.save(settings)
         self.save_requested.emit(settings)
         QMessageBox.information(self, 'Saved', 'Settings saved successfully.')
