@@ -11,7 +11,7 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import Qt, pyqtSignal
 
-from ui.widgets import ReadoutWidget, TimerRingWidget, make_button
+from ui.widgets import ReadoutWidget, make_button
 from calibration.engine import Phase
 
 
@@ -192,10 +192,12 @@ class ExecScreen(QWidget):
         v.setContentsMargins(14, 16, 14, 16)
         v.setAlignment(Qt.AlignTop | Qt.AlignHCenter)
 
-        self._timer_ring = TimerRingWidget(total=600)
-        v.addWidget(self._timer_ring, alignment=Qt.AlignHCenter)
+        self._waiting_icon = QLabel('⏳')
+        self._waiting_icon.setAlignment(Qt.AlignCenter)
+        self._waiting_icon.setStyleSheet('font-size:48px;')
+        v.addWidget(self._waiting_icon, alignment=Qt.AlignHCenter)
 
-        self._phase_note = QLabel('Waiting for fluctuation to settle.')
+        self._phase_note = QLabel('Waiting for the instrument to report stable.')
         self._phase_note.setWordWrap(True)
         self._phase_note.setAlignment(Qt.AlignCenter)
         self._phase_note.setStyleSheet('font-size:11px;color:#6b7a90;')
@@ -210,13 +212,11 @@ class ExecScreen(QWidget):
     # ------------------------------------------------------------------
     # Public API called by MainWindow
     # ------------------------------------------------------------------
-    def start(self, cert: str, customer: str, total_points: int, max_seconds: int) -> None:
+    def start(self, cert: str, customer: str, total_points: int) -> None:
         """Reset the screen for a new run."""
         self._sub_lbl.setText(f'{cert}  ·  {customer or "—"}')
         self._point_pill.setText(f'Point 1 of {total_points}')
         self._table.setRowCount(0)
-        self._timer_ring.set_total(max_seconds)
-        self._timer_ring.set_remaining(max_seconds)
         self._view_report_btn.setVisible(False)
         self.set_phase(Phase.STABILIZING)
 
@@ -239,11 +239,12 @@ class ExecScreen(QWidget):
 
     def set_phase(self, phase: Phase) -> None:
         phase_map = {
-            Phase.STABILIZING: (0, 'Monitoring fluctuation. Capture happens automatically.'),
-            Phase.SAVING:      (1, 'Point captured — moving to next setpoint.'),
-            Phase.COMPLETED:   (2, 'All setpoints complete. Report generated.'),
+            Phase.STABILIZING: (0, '⏳', 'Waiting for the instrument to report stable. Capture happens automatically.'),
+            Phase.SAVING:      (1, '💾', 'Point captured — moving to next setpoint.'),
+            Phase.COMPLETED:   (2, '✅', 'All setpoints complete. Report generated.'),
         }
-        idx, note = phase_map[phase]
+        idx, icon, note = phase_map[phase]
+        self._waiting_icon.setText(icon)
         self._phase_note.setText(note)
 
         for i, (dot, lbl) in enumerate(self._step_labels):
@@ -255,9 +256,6 @@ class ExecScreen(QWidget):
                 dot.setStyleSheet('border-radius:14px;background:#e2e7ee;color:#6b7a90;font-weight:700;')
 
         self._view_report_btn.setVisible(phase == Phase.COMPLETED)
-
-    def set_remaining(self, seconds: int) -> None:
-        self._timer_ring.set_remaining(seconds)
 
     def add_saved_point(self, sp, fur, master, uut, time_str) -> None:
         err = uut - master

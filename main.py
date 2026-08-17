@@ -2,8 +2,13 @@
 Entry point for the Dry Block Calibrator application.
 
 Run with:
-    python main.py              # simulator mode (no hardware needed)
-    python main.py --real       # real USB hardware
+    python main.py
+
+The app always connects over a real serial port (USBComm) — pick the
+COM port in the Live Monitor screen. To test without the physical dry
+block, run simulator.py (repo root) as a separate process against a
+virtual COM port pair and connect to that port instead; see the
+docstring at the top of simulator.py for setup.
 
 Build EXE:
     pyinstaller --onefile --windowed --name "DryBlockCalibrator" main.py
@@ -41,8 +46,6 @@ from ui.main_window import MainWindow
 
 
 def main() -> None:
-    use_simulator = '--real' not in sys.argv
-
     # These must be set before QApplication() is called.
     # AA_EnableHighDpiScaling: tells Qt to scale the UI to match screen DPI.
     # AA_UseHighDpiPixmaps:    makes icons and images sharp on HiDPI screens.
@@ -63,7 +66,7 @@ def main() -> None:
     app.setApplicationName('Dry Block Calibrator')
     app.setOrganizationName('TIPL')
 
-    window = MainWindow(use_simulator=use_simulator)
+    window = MainWindow()
     window.show()
 
     sys.exit(app.exec_())

@@ -18,13 +18,13 @@ from ui.exec_screen      import ExecScreen
 from ui.reports_screen   import ReportsScreen
 from ui.report_view      import ReportView
 from ui.settings_screen  import SettingsScreen
+from ui.connect_worker   import ConnectWorker
 
-from comm.simulator import SimulatorComm
 from comm.usb_comm  import USBComm, list_com_ports
 
 from calibration.engine import CalibrationEngine, Phase
 from db.report_store    import ReportStore
-from db.settings_store  import SettingsStore
+from db.settings_store  import SettingsStore, clamp_stability_limit
 from report_gen         import generate_pdf
 from models             import CalibrationSession
 from models.calibration_point import CalibrationPoint
@@ -39,7 +39,7 @@ _IDX_SETTINGS = 5
 
 class MainWindow(QMainWindow):
 
-    def __init__(self, use_simulator: bool = True):
+    def __init__(self):
         super().__init__()
         self.setWindowTitle('Dry Block Calibrator — TIPL')
         self.resize(1150, 720)
@@ -47,9 +47,11 @@ class MainWindow(QMainWindow):
 
         self._store     = ReportStore()
         self._settings  = SettingsStore()
-        self._comm      = SimulatorComm() if use_simulator else USBComm()
+        self._comm      = USBComm()
         self._engine: CalibrationEngine | None = None
         self._current_session: CalibrationSession | None = None
+        self._connect_worker: ConnectWorker | None = None
+        self._connect_cancelled = False
 
         self._live_fur    = None
         self._live_master = None
@@ -78,7 +80,10 @@ class MainWindow(QMainWindow):
         self._stack = QStackedWidget()
         self._stack.setObjectName('contentStack')
 
-        ports = list_com_ports() or ['COM3', 'COM4']
+        # Always offer the TCP simulator target too, alongside whatever real
+        # COM ports Windows currently sees — no virtual COM driver (com0com)
+        # needed to test against `simulator.py --transport tcp`.
+        ports = (list_com_ports() or ['COM3', 'COM4']) + ['TCP:127.0.0.1:5025']
         self._live_scr     = LiveScreen(ports)
         self._setup_scr    = SetupScreen()
         self._exec_scr     = ExecScreen()
@@ -93,6 +98,12 @@ class MainWindow(QMainWindow):
         self._settings_scr.set_comm(self._comm)
         root.addWidget(self._stack)
         self._wire_signals()
+
+        # Live Monitor's port field starts out on whatever was last saved
+        # in Settings — still editable/overridable there before Connect.
+        saved_port = self._settings.load().get('serial', {}).get('port')
+        if saved_port:
+            self._live_scr.set_port(saved_port)
 
     def _build_sidebar(self) -> QWidget:
         sidebar = QWidget()
@@ -137,9 +148,12 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
     def _wire_signals(self) -> None:
         self._live_scr.connect_requested.connect(self._on_connect)
+        self._live_scr.cancel_connect_requested.connect(self._on_cancel_connect)
         self._live_scr.disconnect_requested.connect(self._on_disconnect)
         self._live_scr.start_cal_requested.connect(lambda: self._nav_to('setup'))
         self._live_scr.exit_btn.clicked.connect(self.close)
+
+        self._settings_scr.save_requested.connect(self._on_settings_saved)
 
         self._setup_scr.start_requested.connect(self._on_start_calibration)
         self._setup_scr.cancel_requested.connect(lambda: self._nav_to('live'))
@@ -177,6 +191,15 @@ class MainWindow(QMainWindow):
             self._reports_scr.load_sessions(self._store.list_all())
 
     # ------------------------------------------------------------------
+    # Settings
+    # ------------------------------------------------------------------
+    @pyqtSlot(dict)
+    def _on_settings_saved(self, settings: dict) -> None:
+        saved_port = settings.get('serial', {}).get('port')
+        if saved_port:
+            self._live_scr.set_port(saved_port)
+
+    # ------------------------------------------------------------------
     # Connection
     # ------------------------------------------------------------------
     @pyqtSlot(str)
@@ -189,7 +212,40 @@ class MainWindow(QMainWindow):
             )
             self._live_scr.set_connected(False)
             return
-        ok = self._comm.connect(port)
+        if self._connect_worker is not None:
+            return  # a connection attempt is already in flight — ignore the extra click
+
+        serial_cfg = self._settings.load().get('serial', {})
+        baud      = int(serial_cfg.get('baud', 9600))
+        timeout_s = int(serial_cfg.get('timeout_ms', 1000)) / 1000.0
+        retries   = int(serial_cfg.get('retry', 3))
+
+        # Run the (possibly slow, retries * timeout_s) connect attempt on a
+        # worker thread so the GUI — including this screen's Cancel button
+        # and every other screen — stays responsive while it's in progress.
+        self._connect_cancelled = False
+        self._live_scr.set_connecting()
+        self._live_scr.log('info', f'Connecting to {port} @ {baud} baud…')
+
+        worker = ConnectWorker(self._comm, port, baud, timeout_s, retries, parent=self)
+        worker.finished_ok.connect(lambda ok, p=port, b=baud: self._on_connect_finished(ok, p, b))
+        self._connect_worker = worker
+        worker.start()
+
+    @pyqtSlot()
+    def _on_cancel_connect(self) -> None:
+        if self._connect_worker is not None:
+            self._connect_cancelled = True
+            self._connect_worker.cancel()
+            self._live_scr.log('warn', 'Cancelling — the in-flight attempt will still finish first…')
+
+    def _on_connect_finished(self, ok: bool, port: str, baud: int) -> None:
+        cancelled = self._connect_cancelled
+        self._connect_cancelled = False
+        worker, self._connect_worker = self._connect_worker, None
+        if worker is not None:
+            worker.wait()
+
         self._live_scr.set_connected(ok, port)
         if ok:
             self._read_timer.start()
@@ -198,11 +254,37 @@ class MainWindow(QMainWindow):
                 'background:#1a3a2a;color:#22c55e;border-radius:20px;'
                 'padding:6px 14px;font-size:12px;font-weight:600;margin:10px;'
             )
-            self._live_scr.log('ok', f'Connected to {port} @ 9600 8N1')
+            self._live_scr.log('ok', f'Connected to {port} @ {baud} 8N1')
+
+            # Push the lab's configured stability tolerance (SOUR:STAB:LIM)
+            # so SOUR:STAB:TEST? judges against our value, not whatever was
+            # last set on the instrument's own front panel. Clamped here —
+            # settings.json is hand-editable and may predate this field, so
+            # this boundary can't assume the value is already in range.
+            raw_limit = float(
+                self._settings.load().get('manufacturer', {}).get('stability_limit_c', 0.05)
+            )
+            stab_limit = clamp_stability_limit(raw_limit)
+            if stab_limit != raw_limit:
+                self._live_scr.log('warn',
+                    f'Stability tolerance {raw_limit:g} °C in settings is out of range '
+                    f'(0.01-9.99) — clamped to {stab_limit:.2f} °C')
+            if self._comm.set_stability_limit(stab_limit):
+                self._live_scr.log('info', f'Stability tolerance set to {stab_limit:.2f} °C')
+            else:
+                self._live_scr.log('warn',
+                    f'Could not confirm stability tolerance ({stab_limit:.2f} °C) on the instrument')
+        elif cancelled:
+            self._live_scr.log('warn', 'Connection attempt cancelled')
         else:
-            self._live_scr.log('err', f'Failed to open {port}')
-            QMessageBox.warning(self, 'Connection Failed',
-                                f'Could not open {port}.\nCheck the cable and port.')
+            reason = self._comm.last_error
+            if reason:
+                self._live_scr.log('err', reason)
+                QMessageBox.warning(self, 'Connection Failed', reason)
+            else:
+                self._live_scr.log('err', f'Failed to open {port}')
+                QMessageBox.warning(self, 'Connection Failed',
+                                    f'Could not open {port}.\nCheck the cable and port.')
 
     @pyqtSlot()
     def _on_disconnect(self) -> None:
@@ -238,24 +320,14 @@ class MainWindow(QMainWindow):
     @pyqtSlot(object)
     def _on_start_calibration(self, session: CalibrationSession) -> None:
         self._current_session = session
-        settings = self._settings.load()
-        mfg = settings.get('manufacturer', {})
-        max_seconds = int(mfg.get('max_stabilization_min', 10.0) * 60)
-        volatility_window = mfg.get('volatility_time_min', 3.0)
-        volatility_limit  = mfg.get('volatility_limit', 0.1)
-        self._max_stab_seconds = max_seconds
 
-        self._exec_scr.start(session.cert_no, session.customer, len(session.setpoints), max_seconds)
+        self._exec_scr.start(session.cert_no, session.customer, len(session.setpoints))
         self._exec_scr.set_setpoint(session.setpoints[0], 0, len(session.setpoints))
 
         self._engine = CalibrationEngine(
             session=session,
             comm=self._comm,
-            max_stabilization_seconds=max_seconds,
-            volatility_window_minutes=volatility_window,
-            volatility_limit=volatility_limit,
             on_phase_change=self._on_phase_change,
-            on_tick=self._on_timer_tick,
             on_point_ready=self._on_point_ready,
             on_complete=self._on_calibration_complete,
         )
@@ -265,11 +337,6 @@ class MainWindow(QMainWindow):
 
     def _on_phase_change(self, phase: Phase) -> None:
         self._exec_scr.set_phase(phase)
-        if phase == Phase.STABILIZING:
-            self._exec_scr.set_remaining(self._max_stab_seconds)
-
-    def _on_timer_tick(self, remaining: int) -> None:
-        self._exec_scr.set_remaining(remaining)
 
     def _on_point_ready(self, point: CalibrationPoint) -> None:
         time_str = point.timestamp.strftime('%H:%M:%S')
@@ -333,3 +400,14 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             QMessageBox.critical(self, 'PDF Error',
                                  f'Could not generate PDF:\n{exc}')
+
+    # ------------------------------------------------------------------
+    # Shutdown
+    # ------------------------------------------------------------------
+    def closeEvent(self, event) -> None:
+        # Don't let a connection attempt in flight turn into a dangling
+        # thread (or a Qt "destroyed while running" crash) on exit.
+        if self._connect_worker is not None:
+            self._connect_worker.cancel()
+            self._connect_worker.wait(2000)
+        super().closeEvent(event)

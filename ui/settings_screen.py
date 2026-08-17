@@ -7,7 +7,9 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, pyqtSignal, QTimer
 
 from ui.widgets import make_button
-from db.settings_store import SettingsStore
+from db.settings_store import (
+    SettingsStore, STABILITY_LIMIT_MIN, STABILITY_LIMIT_MAX, clamp_stability_limit,
+)
 
 MANUFACTURER_PIN = '1234'
 
@@ -93,24 +95,27 @@ class SettingsScreen(QWidget):
         form.setHorizontalSpacing(14)
 
         self._iface  = QComboBox()
-        self._iface.addItems(['USB', 'RS232'])
-        self._iface.setToolTip('USB is active. RS232 support is planned for a future version.')
+        self._iface.addItems(['RS-232'])
+        self._iface.setEnabled(False)
+        self._iface.setToolTip(
+            'The 9144 has a single RS-232 (DB-9) interface — no USB. If your PC '
+            'connects via a USB-to-serial adapter cable, Windows still presents '
+            'it as a COM port below, so nothing else changes.'
+        )
 
         self._port   = QComboBox()
+        self._port.setEditable(True)
         self._port.addItems(['COM1','COM2','COM3','COM4','COM5','COM6','COM7','COM8'])
         self._port.setCurrentText('COM3')
+        self._port.lineEdit().setPlaceholderText('COM3 or TCP:127.0.0.1:5025')
 
         self._baud   = QComboBox()
-        self._baud.addItems(['9600','19200','38400','57600','115200'])
-
-        self._bits   = QComboBox()
-        self._bits.addItems(['8','7'])
-
-        self._parity = QComboBox()
-        self._parity.addItems(['None','Even','Odd'])
-
-        self._stop   = QComboBox()
-        self._stop.addItems(['1','2'])
+        self._baud.addItems(['1200','2400','4800','9600','19200','38400'])
+        self._baud.setCurrentText('9600')
+        self._baud.setToolTip(
+            'Must match the baud rate set on the instrument itself '
+            '(MENU|SYSTEM MENU|SYSTEM SETUP|COMM SETUP). Range fixed by the 9144.'
+        )
 
         self._timeout = QLineEdit('1000')
         self._timeout.setPlaceholderText('milliseconds')
@@ -121,13 +126,14 @@ class SettingsScreen(QWidget):
         form.addRow('Interface',     self._iface)
         form.addRow('COM Port',      self._port)
         form.addRow('Baud Rate',     self._baud)
-        form.addRow('Data Bits',     self._bits)
-        form.addRow('Parity',        self._parity)
-        form.addRow('Stop Bits',     self._stop)
         form.addRow('Timeout (ms)',  self._timeout)
         form.addRow('Retry Count',   self._retry)
 
-        fixed = QLabel('8N1  ·  Protocol commands are hardcoded from datasheet')
+        fixed = QLabel(
+            '8 data bits · no parity · 1 stop bit — fixed by the 9144, not '
+            'user-configurable. Baud rate above is the only thing that must match '
+            'the instrument\'s COMM SETUP menu.'
+        )
         fixed.setStyleSheet('font-size:11px;color:#a0aec0;padding:4px 0;')
         fixed.setWordWrap(True)
         form.addRow('', fixed)
@@ -263,7 +269,7 @@ class SettingsScreen(QWidget):
         box.setObjectName('card')
         box.setStyleSheet('QGroupBox{border:1px solid #d1d9e6;}')
         h = QHBoxLayout(box)
-        lbl = QLabel('PIN-protected: maximum stabilization time, volatility window, and fluctuation limit.')
+        lbl = QLabel('PIN-protected: live instrument stability status.')
         lbl.setStyleSheet('font-size:11px;color:#6b7a90;')
         lbl.setWordWrap(True)
         h.addWidget(lbl, 1)
@@ -411,62 +417,79 @@ class SettingsScreen(QWidget):
         self._show_manufacturer_dialog()
 
     def _show_manufacturer_dialog(self) -> None:
-        settings = self._store.load()
-        mfg = settings.get('manufacturer', {})
-
         dlg = QDialog(self)
         dlg.setWindowTitle('Manufacturer Settings')
-        dlg.setMinimumWidth(360)
+        dlg.setMinimumWidth(380)
         form = QFormLayout(dlg)
 
-        max_stab = QDoubleSpinBox()
-        max_stab.setRange(0.1, 240)
-        max_stab.setSuffix(' min')
-        max_stab.setValue(mfg.get('max_stabilization_min', 10.0))
+        mfg = self._store.load().get('manufacturer', {})
+        current_limit = clamp_stability_limit(float(mfg.get('stability_limit_c', 0.05)))
 
-        volatility_now = QLabel('—')
-        volatility_now.setStyleSheet('color:#6b7a90;')
+        limit_spin = QDoubleSpinBox()
+        limit_spin.setRange(STABILITY_LIMIT_MIN, STABILITY_LIMIT_MAX)
+        limit_spin.setDecimals(2)
+        limit_spin.setSingleStep(0.01)
+        limit_spin.setSuffix(' °C')
+        limit_spin.setValue(current_limit)
+        form.addRow('Stability Tolerance', limit_spin)
 
-        vol_time = QDoubleSpinBox()
-        vol_time.setRange(0.1, 60)
-        vol_time.setSuffix(' min')
-        vol_time.setValue(mfg.get('volatility_time_min', 3.0))
+        note = QLabel(
+            'Sent to the instrument as SOUR:STAB:LIM — the band SOUR:STAB:TEST? '
+            'must stay within to report stable. Per the 9144 datasheet its own '
+            'stability spec is ~0.03°C at 50°C to ~0.05°C at 660°C — a tolerance '
+            'tighter than that may never be satisfied.'
+        )
+        note.setWordWrap(True)
+        note.setStyleSheet('font-size:11px;color:#a0aec0;')
+        form.addRow(note)
 
-        vol_limit = QDoubleSpinBox()
-        vol_limit.setRange(0.001, 50)
-        vol_limit.setDecimals(3)
-        vol_limit.setSuffix(' °C')
-        vol_limit.setValue(mfg.get('volatility_limit', 0.1))
+        on_instrument = QLabel('—')
+        on_instrument.setStyleSheet('color:#6b7a90;')
+        form.addRow('Currently on instrument (SOUR:STAB:LIM?)', on_instrument)
 
-        form.addRow('Maximum Stabilization Time', max_stab)
-        form.addRow('Volatility Over X Minutes (live)', volatility_now)
-        form.addRow('Volatility Time', vol_time)
-        form.addRow('Volatility Fluctuation Limit', vol_limit)
+        stable_now = QLabel('—')
+        stable_now.setStyleSheet('color:#6b7a90;')
+        form.addRow('Stable (SOUR:STAB:TEST?)', stable_now)
+
+        status = QLabel('')
+        status.setWordWrap(True)
+        form.addRow(status)
 
         timer = QTimer(dlg)
         def _refresh():
             if self._comm is not None and getattr(self._comm, 'is_connected', False):
-                v = self._comm.read_volatility(vol_time.value())
-                volatility_now.setText(f'{v:.3f} °C' if v is not None else 'collecting data…')
+                readback = self._comm.get_stability_limit()
+                on_instrument.setText(f'{readback:.2f} °C' if readback is not None else 'unknown')
+                stable_now.setText('Yes' if self._comm.read_stable() else 'No')
             else:
-                volatility_now.setText('not connected')
+                on_instrument.setText('not connected')
+                stable_now.setText('not connected')
         timer.timeout.connect(_refresh)
         timer.start(1000)
         _refresh()
 
-        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(dlg.accept)
+        def _on_save():
+            value = limit_spin.value()
+            settings = self._store.load()
+            settings['manufacturer'] = {'stability_limit_c': value}
+            self._store.save(settings)
+            if self._comm is not None and getattr(self._comm, 'is_connected', False):
+                ok = self._comm.set_stability_limit(value)
+                status.setText(
+                    f'Saved and pushed to instrument ({value:.2f} °C).' if ok else
+                    'Saved, but the instrument did not acknowledge the new value.'
+                )
+                status.setStyleSheet(f'font-size:11px;color:{"#22c55e" if ok else "#ef4444"};')
+            else:
+                status.setText('Saved. Will be pushed to the instrument on next connect.')
+                status.setStyleSheet('font-size:11px;color:#6b7a90;')
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Close)
+        buttons.button(QDialogButtonBox.Save).clicked.connect(_on_save)
         buttons.rejected.connect(dlg.reject)
         form.addRow(buttons)
 
-        if dlg.exec_() == QDialog.Accepted:
-            settings['manufacturer'] = {
-                'max_stabilization_min': max_stab.value(),
-                'volatility_time_min':   vol_time.value(),
-                'volatility_limit':      vol_limit.value(),
-            }
-            settings['stab_min'] = max_stab.value()
-            self._store.save(settings)
+        dlg.exec_()
         timer.stop()
 
     # ------------------------------------------------------------------
@@ -476,7 +499,7 @@ class SettingsScreen(QWidget):
         s = self._store.load()
 
         serial = s.get('serial', {})
-        self._iface.setCurrentText(serial.get('iface', 'USB'))
+        self._iface.setCurrentText(serial.get('iface', 'RS-232'))
         self._port.setCurrentText(serial.get('port', 'COM3'))
         self._baud.setCurrentText(str(serial.get('baud', 9600)))
         self._timeout.setText(str(serial.get('timeout_ms', 1000)))

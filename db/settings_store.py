@@ -18,9 +18,21 @@ from models.calibration_session import InstrumentInfo
 
 SETTINGS_PATH = Path(__file__).parent.parent / 'data' / 'settings.json'
 
+# SOUR:STAB:LIM range per the 9144 protocol (Digital Interface §6.4) —
+# values outside this go in the instrument's own error queue and are
+# rejected, so anything from settings.json (hand-edited, stale, or from
+# before this field existed) must be clamped into range before use.
+STABILITY_LIMIT_MIN = 0.01
+STABILITY_LIMIT_MAX = 9.99
+
+
+def clamp_stability_limit(value: float) -> float:
+    return min(max(value, STABILITY_LIMIT_MIN), STABILITY_LIMIT_MAX)
+
+
 DEFAULTS: dict[str, Any] = {
     'serial': {
-        'iface': 'USB', 'port': 'COM3', 'baud': 9600,
+        'iface': 'RS-232', 'port': 'COM3', 'baud': 9600,
         'timeout_ms': 1000, 'retry': 3,
     },
     'calibrator_range': {'min': None, 'max': None},
@@ -28,12 +40,11 @@ DEFAULTS: dict[str, Any] = {
     'cmc_points': [],          # [{'temperature': float, 'cmc': float}, ...]
     'setpoints': [],           # [float, ...]
     'master_rtd': InstrumentInfo().to_dict(),
-    'manufacturer': {
-        'max_stabilization_min': 10.0,
-        'volatility_time_min':   3.0,
-        'volatility_limit':      0.1,
-    },
-    'stab_min': 10.0,          # legacy alias kept in sync with manufacturer.max_stabilization_min
+    # stability_limit_c is pushed to the instrument as SOUR:STAB:LIM on
+    # connect — the tolerance SOUR:STAB:TEST? judges against. 9144 range
+    # is 0.01-9.99 C; its own datasheet stability spec is ~0.03 C (50 C)
+    # to ~0.05 C (660 C), so 0.05 is a safe default across the full range.
+    'manufacturer': {'stability_limit_c': 0.05},
 }
 
 

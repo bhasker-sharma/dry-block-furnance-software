@@ -6,8 +6,6 @@ from PyQt5.QtWidgets import (
     QWidget, QLabel, QVBoxLayout, QHBoxLayout, QFrame, QSizePolicy
 )
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal
-from PyQt5.QtGui import QPainter, QColor, QPen, QFont
-import math
 
 
 # ── Readout card ──────────────────────────────────────────────────────────────
@@ -81,69 +79,6 @@ class ReadoutWidget(QWidget):
         self._value_label.style().polish(self._value_label)
 
 
-# ── Timer ring ────────────────────────────────────────────────────────────────
-class TimerRingWidget(QWidget):
-    """
-    Circular progress timer — same visual as the JSX TimerRing component.
-
-    Why custom painting?
-    Qt has QProgressBar but it's horizontal. A circular arc requires
-    QPainter (Qt's drawing API). We draw the grey background arc, then
-    the accent arc whose length represents remaining/total.
-    """
-
-    def __init__(self, total: int = 600, parent=None):
-        super().__init__(parent)
-        self._total    = total
-        self._remaining = total
-        self.setFixedSize(160, 160)
-
-    def set_remaining(self, seconds: int) -> None:
-        self._remaining = max(0, seconds)
-        self.update()   # triggers paintEvent
-
-    def set_total(self, total: int) -> None:
-        self._total = max(1, total)
-        self.update()
-
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
-
-        w, h = self.width(), self.height()
-        margin = 16
-        rect_size = min(w, h) - 2 * margin
-
-        # centre the drawing rectangle
-        x = (w - rect_size) / 2
-        y = (h - rect_size) / 2
-
-        # background arc (grey)
-        pen = QPen(QColor('#e2e7ee'), 10, Qt.SolidLine, Qt.RoundCap)
-        painter.setPen(pen)
-        painter.drawArc(int(x), int(y), rect_size, rect_size, 0, 360 * 16)
-
-        # foreground arc (accent colour)
-        if self._total > 0:
-            fraction = self._remaining / self._total
-            span = int(fraction * 360 * 16)
-            pen.setColor(QColor('#3d7fff'))
-            painter.setPen(pen)
-            # Qt arcs start at 3 o'clock; we want 12 o'clock = 90°
-            painter.drawArc(int(x), int(y), rect_size, rect_size,
-                            90 * 16, span)
-
-        # time text in centre
-        mm = self._remaining // 60
-        ss = self._remaining  % 60
-        painter.setPen(QColor('#1a2332'))
-        font = QFont('Courier New', 18, QFont.Bold)
-        painter.setFont(font)
-        painter.drawText(0, 0, w, h, Qt.AlignCenter, f'{mm:02d}:{ss:02d}')
-
-        painter.end()
-
-
 # ── Log console ───────────────────────────────────────────────────────────────
 class ConsoleWidget(QFrame):
     """
@@ -155,7 +90,8 @@ class ConsoleWidget(QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName('console')
-        self._lines: list[str] = []
+        self._lines: list[str] = []         # HTML, for on-screen display
+        self._plain_lines: list[str] = []   # plain text, for copy-to-clipboard
 
         self._label = QLabel('awaiting connection…')
         self._label.setObjectName('console')
@@ -178,9 +114,16 @@ class ConsoleWidget(QFrame):
             f'<span style="color:{colour}">{message}</span>'
         )
         self._lines.append(line)
+        self._plain_lines.append(f'{t}  [{kind.upper()}]  {message}')
         if len(self._lines) > self.MAX_LINES:
             self._lines.pop(0)
+            self._plain_lines.pop(0)
         self._label.setText('<br/>'.join(self._lines))
+
+    def to_plain_text(self) -> str:
+        """All currently-visible log lines as plain text, one per line —
+        used to copy the full log to the clipboard for bug reports."""
+        return '\n'.join(self._plain_lines)
 
 
 # ── Utility: styled button factory ───────────────────────────────────────────

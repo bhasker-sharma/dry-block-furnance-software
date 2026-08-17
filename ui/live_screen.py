@@ -5,7 +5,7 @@ Matches screens_a.jsx : LiveScreen component.
 """
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QComboBox, QGroupBox, QScrollArea, QSizePolicy, QFrame
+    QComboBox, QGroupBox, QScrollArea, QSizePolicy, QFrame, QApplication
 )
 from PyQt5.QtCore import Qt, pyqtSignal
 
@@ -20,9 +20,10 @@ class LiveScreen(QWidget):
     methods on other screens or the main window. This keeps each screen
     self-contained and testable.
     """
-    connect_requested    = pyqtSignal(str)   # emits port name
-    disconnect_requested = pyqtSignal()
-    start_cal_requested  = pyqtSignal()
+    connect_requested        = pyqtSignal(str)   # emits port name
+    cancel_connect_requested = pyqtSignal()
+    disconnect_requested     = pyqtSignal()
+    start_cal_requested      = pyqtSignal()
 
     def __init__(self, available_ports: list[str], parent=None):
         super().__init__(parent)
@@ -88,6 +89,12 @@ class LiveScreen(QWidget):
         console_box.setObjectName('card')
         console_box.setStyleSheet('QGroupBox{border:1px solid #d1d9e6;}')
         cb = QVBoxLayout(console_box)
+        console_header = QHBoxLayout()
+        console_header.addStretch()
+        self._copy_log_btn = make_button('Copy Logs', 'ghost')
+        self._copy_log_btn.clicked.connect(self._on_copy_logs)
+        console_header.addWidget(self._copy_log_btn)
+        cb.addLayout(console_header)
         self._console = ConsoleWidget()
         self._console.setMinimumHeight(130)
         cb.addWidget(self._console)
@@ -110,11 +117,11 @@ class LiveScreen(QWidget):
         box.setStyleSheet('QGroupBox{border:1px solid #d1d9e6;}')
         h = QHBoxLayout(box)
 
-        # interface (fixed USB for now, RS232 later)
+        # interface — the 9144 only has RS-232 (no USB), so this is fixed
         iface_col = QVBoxLayout()
         iface_col.addWidget(QLabel('Interface'))
         self._iface_combo = QComboBox()
-        self._iface_combo.addItems(['USB', 'RS232'])
+        self._iface_combo.addItems(['RS-232'])
         self._iface_combo.setEnabled(False)
         iface_col.addWidget(self._iface_combo)
         h.addLayout(iface_col)
@@ -123,7 +130,9 @@ class LiveScreen(QWidget):
         port_col = QVBoxLayout()
         port_col.addWidget(QLabel('COM Port'))
         self._port_combo = QComboBox()
+        self._port_combo.setEditable(True)
         self._port_combo.addItems(ports if ports else ['COM3'])
+        self._port_combo.lineEdit().setPlaceholderText('COM3 or TCP:127.0.0.1:5025')
         port_col.addWidget(self._port_combo)
         h.addLayout(port_col)
 
@@ -175,6 +184,21 @@ class LiveScreen(QWidget):
         self._ro_master.set_value(master)
         self._ro_uut.set_value(uut)
 
+    def set_connecting(self) -> None:
+        """Connection attempt in progress (on a worker thread) — the rest of
+        the app stays usable; this button becomes Cancel instead of freezing."""
+        self._port_combo.setEnabled(False)
+        self._start_btn.setEnabled(False)
+        self._conn_btn.setText('Cancel')
+        self._conn_btn.setProperty('role', 'ghost')
+        self._status_pill.setText('● Connecting…')
+        self._status_pill.setStyleSheet(
+            'background:#2a2410;color:#f59e0b;border-radius:12px;'
+            'padding:4px 12px;font-size:12px;font-weight:600;'
+        )
+        self._conn_btn.style().unpolish(self._conn_btn)
+        self._conn_btn.style().polish(self._conn_btn)
+
     def set_connected(self, connected: bool, port: str = '') -> None:
         self._port_combo.setEnabled(not connected)
         self._start_btn.setEnabled(connected)
@@ -202,13 +226,26 @@ class LiveScreen(QWidget):
     def log(self, kind: str, message: str) -> None:
         self._console.append(kind, message)
 
+    def _on_copy_logs(self) -> None:
+        QApplication.clipboard().setText(self._console.to_plain_text())
+        self._console.append('info', 'Logs copied to clipboard')
+
+    def set_port(self, port: str) -> None:
+        """Pre-fill the COM Port field (e.g. from the saved Settings port).
+        Still just a starting value — the field stays editable/overridable
+        before Connect is clicked."""
+        self._port_combo.setCurrentText(port)
+
     @property
     def exit_btn(self) -> QPushButton:
         return self._exit_btn
 
     # ------------------------------------------------------------------
     def _on_conn_click(self) -> None:
-        if self._conn_btn.text().startswith('Connect'):
+        text = self._conn_btn.text()
+        if text.startswith('Cancel'):
+            self.cancel_connect_requested.emit()
+        elif text.startswith('Connect'):
             self.connect_requested.emit(self._port_combo.currentText())
         else:
             self.disconnect_requested.emit()
