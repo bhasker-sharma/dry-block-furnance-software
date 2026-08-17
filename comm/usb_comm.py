@@ -67,13 +67,11 @@ class USBComm(BaseComm):
                         stopbits=serial.STOPBITS_ONE, timeout=timeout_s,
                     )
                     self._socket = None
-                    # Discard anything already sitting in the pipe before we
-                    # send a single command. A prior aborted attempt's
-                    # response can still be queued here (closing our handle
-                    # doesn't clear a virtual null-modem pair's buffer), and
-                    # reading it as the answer to *this* attempt's *IDN?
-                    # desyncs every request/response pair from here on.
-                    self._serial.reset_input_buffer()
+                    # No explicit flush needed here — every query in
+                    # _query_float()/_query_str() (including the first one,
+                    # *IDN? in _verify_instrument()) now drains stale bytes
+                    # immediately before writing, so the handshake gets the
+                    # same protection as everything else.
             except (serial.SerialException, OSError):
                 self._serial = None
                 self._socket = None
@@ -219,10 +217,35 @@ class USBComm(BaseComm):
             buf.extend(b)
         return buf.decode('ascii', errors='replace') if buf else None
 
+    def _drain_stale(self) -> None:
+        """Discard anything already sitting in the receive buffer before we
+        write a fresh query. If a previous query's read ever timed out or
+        was otherwise abandoned mid-flight, its response can still be
+        waiting here — reading it as the answer to *this* query desyncs
+        every request/response pair from that point on and never resyncs
+        on its own (the same failure connect() had to guard against at
+        the handshake; this closes it everywhere else a response could
+        go unread, e.g. the live 1-second temperature/stability poll)."""
+        if self._serial is not None:
+            try:
+                self._serial.reset_input_buffer()
+            except (serial.SerialException, OSError):
+                pass
+        elif self._socket is not None:
+            self._socket.settimeout(0)
+            try:
+                while self._socket.recv(4096):
+                    pass
+            except (BlockingIOError, socket.timeout, OSError):
+                pass
+            finally:
+                self._socket.settimeout(self._timeout_s)
+
     def _query_float(self, command: str) -> Optional[float]:
         if not self.is_connected:
             return None
         try:
+            self._drain_stale()
             self._write(command)
             line = self._read_line()
             if not line:
@@ -236,6 +259,7 @@ class USBComm(BaseComm):
         if not self.is_connected:
             return None
         try:
+            self._drain_stale()
             self._write(command)
             return self._read_line()
         except (serial.SerialException, OSError):

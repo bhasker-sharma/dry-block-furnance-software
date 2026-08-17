@@ -73,16 +73,26 @@ let you connect. This is checked in `MainWindow._on_connect()`
      hardware, run `simulator.py` (repo root) as its own process against a
      virtual COM port pair (e.g. com0com) or over TCP — see the docstring
      at the top of `simulator.py`.
-   - **`USBComm.connect()` flushes the input buffer right after opening the
-     port**, before sending `*IDN?`. Without this, a virtual null-modem
-     pair (com0com) can still be holding a response from a previous
-     aborted attempt — reading that as the answer to a fresh query
-     desyncs every subsequent request/response pair by one, which surfaces
-     as `*IDN?`/`SYST:CONF:MOD?` returning nonsense values that alternate
-     on every retry. If this ever recurs against the simulator, restart
-     `simulator.py` too — it holds its COM port open for its whole process
-     lifetime, so a long enough backlog of unanswered commands from
-     repeated failed attempts persists there, not just in the app.
+   - **Every query drains the receive buffer immediately before writing the
+     command** (`USBComm._drain_stale()`, called from `_query_float()` /
+     `_query_str()` — not just at connect). If any single query's read
+     ever times out or is otherwise abandoned mid-flight (a virtual
+     null-modem pair can keep holding a response even after the reading
+     handle closes), the next query would otherwise read that leftover
+     response instead of its own — desyncing every request/response pair
+     from that point on, permanently, since nothing else resyncs it. This
+     showed up two ways during development: at connect, as `*IDN?` /
+     `SYST:CONF:MOD?` returning nonsense that alternated on every retry;
+     and mid-run, as the live temperature poll (`read_temperatures()`,
+     §1 below) silently reading one sensor's value into another's slot —
+     e.g. Standard RTD staying stuck near ambient while Dry Block tracked
+     the setpoint correctly. Both were the same underlying bug, just
+     triggered at different points; the fix is the same drain-before-every-
+     query, not anything specific to connect. If a full session ever gets
+     stuck in this state against the simulator, restart `simulator.py` —
+     it holds its COM port open for its whole process lifetime, so a
+     backlog of unanswered commands from many prior queries can
+     accumulate there too, not just in the app's own buffer.
 
 **Live readout loop** — `MainWindow._on_read_tick()` (`ui/main_window.py:264`),
 fires every second while connected:
@@ -285,7 +295,14 @@ forgotten**:
    uncooperative, over plain TCP (`--transport tcp`, then connect the app
    to `TCP:127.0.0.1:5025`) — no virtual driver needed either way. See the
    docstring at the top of `simulator.py` and the README's "Running"
-   section.
+   section. ~~Stability buffer wasn't reset on a setpoint change~~ Fixed —
+   `ThermalModel.set_setpoint_c()` now clears `_stab_buf` whenever the
+   setpoint changes, so a block already sitting flat at an old setpoint
+   can't make `SOUR:STAB:TEST?` report stable at a new one before it's
+   actually moved there. Without this, running two calibrations back-to-back
+   in the same simulator session (without a restart) could capture a point
+   instantly at whatever temperature the block happened to already be
+   sitting at, mislabeled with the new setpoint.
 
 3. ~~`calibration/engine.py` — software volatility-window/max-time
    stabilization logic.~~ **Superseded by a deliberate redesign, not a
