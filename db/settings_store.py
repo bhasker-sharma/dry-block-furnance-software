@@ -10,13 +10,24 @@ new lab-level configuration: serial port, calibrator range, CMC,
 setpoints, Master RTD, and manufacturer settings.
 """
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
 from models.calibration_session import InstrumentInfo
 
 
-SETTINGS_PATH = Path(__file__).parent.parent / 'data' / 'settings.json'
+def _app_root() -> Path:
+    # Frozen (PyInstaller --onefile): __file__ would resolve inside the
+    # temp folder the exe extracts itself into and deletes on exit, so
+    # settings/reports would vanish every time the app closes. Anchor to
+    # the folder containing the actual .exe instead, which is permanent.
+    if getattr(sys, 'frozen', False):
+        return Path(sys.executable).parent
+    return Path(__file__).parent.parent
+
+
+SETTINGS_PATH = _app_root() / 'data' / 'settings.json'
 
 # SOUR:STAB:LIM range per the 9144 protocol (Digital Interface §6.4) —
 # values outside this go in the instrument's own error queue and are
@@ -40,6 +51,10 @@ DEFAULTS: dict[str, Any] = {
     'cmc_points': [],          # [{'temperature': float, 'cmc': float}, ...]
     'setpoints': [],           # [float, ...]
     'master_rtd': InstrumentInfo().to_dict(),
+    # Where saved calibration certificates (reports/*.json) are written.
+    # None until the operator picks a folder in Settings — required before
+    # a calibration can be started (see is_reports_dir_configured()).
+    'reports_dir': None,
     # stability_limit_c is pushed to the instrument as SOUR:STAB:LIM on
     # connect — the tolerance SOUR:STAB:TEST? judges against. 9144 range
     # is 0.01-9.99 C; its own datasheet stability spec is ~0.03 C (50 C)
@@ -78,3 +93,8 @@ class SettingsStore:
         has_range = rng.get('min') is not None and rng.get('max') is not None
         has_setpoints = bool(s.get('setpoints'))
         return has_range and has_setpoints
+
+    def is_reports_dir_configured(self) -> bool:
+        """A calibration can't be started until the operator has picked
+        where saved certificates go — see reports_dir in DEFAULTS."""
+        return bool(self.load().get('reports_dir'))

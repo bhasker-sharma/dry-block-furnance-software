@@ -159,6 +159,12 @@ class SetupScreen(QWidget):
         note.setStyleSheet('font-size:11px;color:#a0aec0;margin-top:6px;')
         note.setWordWrap(True)
         v.addWidget(note)
+
+        self._reports_dir_note = QLabel('—')
+        self._reports_dir_note.setStyleSheet('font-size:11px;color:#f59e0b;margin-top:4px;')
+        self._reports_dir_note.setWordWrap(True)
+        v.addWidget(self._reports_dir_note)
+
         v.addStretch()
         return box
 
@@ -191,8 +197,10 @@ class SetupScreen(QWidget):
         by     = self._by_input.text().strip()
         u_ser  = self._u_serial.text().strip()
         u_tag  = self._u_tag.text().strip()
-        sps    = self._store.load().get('setpoints', [])
-        ok = bool(cert and cust and by and u_ser and u_tag and sps)
+        settings = self._store.load()
+        sps         = settings.get('setpoints', [])
+        reports_dir = settings.get('reports_dir')
+        ok = bool(cert and cust and by and u_ser and u_tag and sps and reports_dir)
         self._start_btn.setEnabled(ok)
 
     # ------------------------------------------------------------------
@@ -232,11 +240,19 @@ class SetupScreen(QWidget):
         self._check_valid()
 
     def _refresh_setpoints_display(self) -> None:
-        sps = sorted(self._store.load().get('setpoints', []))
+        settings = self._store.load()
+        sps = sorted(settings.get('setpoints', []))
         if sps:
             self._sp_list_label.setText('  ·  '.join(f'{sp:.0f} °C' for sp in sps))
         else:
             self._sp_list_label.setText('No setpoints configured — set them up in Settings.')
+
+        if settings.get('reports_dir'):
+            self._reports_dir_note.setText('')
+        else:
+            self._reports_dir_note.setText(
+                'Reports Storage Location not configured — set it in Settings before starting.'
+            )
 
     def showEvent(self, event) -> None:
         super().showEvent(event)

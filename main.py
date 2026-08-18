@@ -15,6 +15,7 @@ Build EXE:
 """
 import os
 import sys
+from pathlib import Path
 
 # ── DPI / Multi-monitor scaling ───────────────────────────────────────
 # These MUST be set before importing PyQt5 or creating QApplication.
@@ -41,8 +42,29 @@ os.environ.setdefault('QT_ENABLE_HIGHDPI_SCALING',   '1')
 
 from PyQt5.QtWidgets import QApplication
 from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QIcon
 
 from ui.main_window import MainWindow
+
+
+def _icon_path() -> Path:
+    """
+    Path to the app icon (asset/logo.ico), used for the window/taskbar icon
+    while running — separate from PyInstaller's --icon flag, which only
+    sets the icon Explorer shows for the .exe file itself, not anything
+    the running app displays.
+
+    Bundled read-only resources like this live under sys._MEIPASS when
+    frozen (PyInstaller --onefile extracts them there at startup) — this is
+    the opposite of where *writable* data goes (see db/settings_store.py's
+    _app_root(), which anchors to the exe's own folder instead, since that
+    has to survive after the process exits and _MEIPASS doesn't).
+    """
+    if getattr(sys, 'frozen', False):
+        base = Path(sys._MEIPASS)
+    else:
+        base = Path(__file__).parent
+    return base / 'asset' / 'logo.ico'
 
 
 def main() -> None:
@@ -65,6 +87,10 @@ def main() -> None:
     app = QApplication(sys.argv)
     app.setApplicationName('Dry Block Calibrator')
     app.setOrganizationName('TIPL')
+
+    icon_path = _icon_path()
+    if icon_path.exists():
+        app.setWindowIcon(QIcon(str(icon_path)))
 
     window = MainWindow()
     window.show()

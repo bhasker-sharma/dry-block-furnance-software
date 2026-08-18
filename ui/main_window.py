@@ -2,6 +2,7 @@
 Main Window — the application shell and controller.
 Owns all services (comm, store) and wires all screen signals.
 """
+import sys
 from pathlib import Path
 
 from PyQt5.QtWidgets import (
@@ -10,6 +11,7 @@ from PyQt5.QtWidgets import (
     QMessageBox, QFileDialog
 )
 from PyQt5.QtCore import Qt, QTimer, pyqtSlot
+from PyQt5.QtGui import QIcon
 
 from ui.styles import APP_QSS
 from ui.live_screen      import LiveScreen
@@ -37,6 +39,18 @@ _IDX_REPORT   = 4
 _IDX_SETTINGS = 5
 
 
+def _icon_path() -> Path:
+    """Same resolution as main.py's _icon_path() — bundled read-only
+    resources live under sys._MEIPASS when frozen (PyInstaller --onefile
+    extracts them there at startup), unlike writable data which anchors to
+    the exe's own folder instead (see db/settings_store.py's _app_root())."""
+    if getattr(sys, 'frozen', False):
+        base = Path(sys._MEIPASS)
+    else:
+        base = Path(__file__).parent.parent
+    return base / 'asset' / 'logo.ico'
+
+
 class MainWindow(QMainWindow):
 
     def __init__(self):
@@ -44,9 +58,13 @@ class MainWindow(QMainWindow):
         self.setWindowTitle('Dry Block Calibrator — TIPL')
         self.resize(1150, 720)
         self.setMinimumSize(920, 620)
+        icon_path = _icon_path()
+        if icon_path.exists():
+            self.setWindowIcon(QIcon(str(icon_path)))
 
-        self._store     = ReportStore()
         self._settings  = SettingsStore()
+        reports_dir = self._settings.load().get('reports_dir')
+        self._store = ReportStore(Path(reports_dir)) if reports_dir else ReportStore()
         self._comm      = USBComm()
         self._engine: CalibrationEngine | None = None
         self._current_session: CalibrationSession | None = None
@@ -198,6 +216,10 @@ class MainWindow(QMainWindow):
         saved_port = settings.get('serial', {}).get('port')
         if saved_port:
             self._live_scr.set_port(saved_port)
+
+        reports_dir = settings.get('reports_dir')
+        if reports_dir:
+            self._store.set_reports_dir(Path(reports_dir))
 
     # ------------------------------------------------------------------
     # Connection

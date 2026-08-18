@@ -14,6 +14,7 @@ File naming:
   Slashes are replaced with underscores to make valid filenames.
 """
 import json
+import sys
 from datetime import date, datetime
 from pathlib import Path
 from typing import List, Optional
@@ -22,7 +23,17 @@ from models.calibration_point import CalibrationPoint
 from models.calibration_session import CalibrationSession, InstrumentInfo
 
 
-REPORTS_DIR = Path(__file__).parent.parent / 'reports'
+def _app_root() -> Path:
+    # Frozen (PyInstaller --onefile): __file__ would resolve inside the
+    # temp folder the exe extracts itself into and deletes on exit, so
+    # settings/reports would vanish every time the app closes. Anchor to
+    # the folder containing the actual .exe instead, which is permanent.
+    if getattr(sys, 'frozen', False):
+        return Path(sys.executable).parent
+    return Path(__file__).parent.parent
+
+
+REPORTS_DIR = _app_root() / 'reports'
 
 
 class ReportStore:
@@ -33,6 +44,13 @@ class ReportStore:
 
     def __init__(self, reports_dir: Path = REPORTS_DIR):
         self._dir = reports_dir
+        self._dir.mkdir(parents=True, exist_ok=True)
+
+    def set_reports_dir(self, reports_dir: Path) -> None:
+        """Switch to a lab-chosen storage folder (Settings screen). Takes
+        effect immediately — the next save()/search()/list_all() call uses
+        the new location."""
+        self._dir = Path(reports_dir)
         self._dir.mkdir(parents=True, exist_ok=True)
 
     # ------------------------------------------------------------------
