@@ -18,6 +18,9 @@ build/
 dist/
 *.spec
 
+# ── Inno Setup installer output ──────────────────────────────────────
+installer_dist/
+
 # ── Logs ─────────────────────────────────────────────────────────────
 *.log
 

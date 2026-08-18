@@ -7,6 +7,7 @@ from PyQt5.QtWidgets import (
     QDialogButtonBox, QInputDialog, QSizePolicy, QFileDialog
 )
 from PyQt5.QtCore import Qt, pyqtSignal, QTimer
+from PyQt5.QtGui import QValidator
 
 from ui.widgets import make_button
 from db.settings_store import (
@@ -14,6 +15,27 @@ from db.settings_store import (
 )
 
 MANUFACTURER_PIN = '1234'
+
+
+class _UnboundedSpinBox(QDoubleSpinBox):
+    """QDoubleSpinBox with its own permissive validator.
+
+    Qt's default QDoubleSpinBox validator can refuse to let you type past
+    a certain number of digits when the minimum is negative (observed:
+    stuck at 999, couldn't reach 1000) — explicit setDecimals() didn't fix
+    it, so rather than keep guessing at the exact internal heuristic, this
+    overrides validate() to accept any string that parses as a number,
+    leaving out-of-range correction to Qt's normal fixup()-on-focus-lost
+    behavior (unchanged, still clamps to min/max once you tab away)."""
+
+    def validate(self, text: str, pos: int):
+        if text in ('', '-'):
+            return (QValidator.Intermediate, text, pos)
+        try:
+            float(text)
+        except ValueError:
+            return (QValidator.Invalid, text, pos)
+        return (QValidator.Acceptable, text, pos)
 
 
 class SettingsScreen(QWidget):
@@ -151,11 +173,15 @@ class SettingsScreen(QWidget):
         form.setVerticalSpacing(10)
         form.setHorizontalSpacing(14)
 
-        self._range_min = QDoubleSpinBox()
-        self._range_min.setRange(-200, 1200)
+        self._range_min = _UnboundedSpinBox()
+        self._range_min.setRange(-200, 999999)
+        self._range_min.setDecimals(0)
+        self._range_min.setSingleStep(100)
         self._range_min.setSuffix(' °C')
-        self._range_max = QDoubleSpinBox()
-        self._range_max.setRange(-200, 1200)
+        self._range_max = _UnboundedSpinBox()
+        self._range_max.setRange(-200, 999999)
+        self._range_max.setDecimals(0)
+        self._range_max.setSingleStep(100)
         self._range_max.setSuffix(' °C')
         self._range_max.setValue(300)
 
