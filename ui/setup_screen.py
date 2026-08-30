@@ -208,7 +208,9 @@ class SetupScreen(QWidget):
     # ------------------------------------------------------------------
     def _on_start(self) -> None:
         settings = self._store.load()
-        setpoints = sorted(settings.get('setpoints', []))
+        # Not re-sorted: Settings allows an ascending-then-descending sweep
+        # order (at most one peak), so the saved order is the run order.
+        setpoints = settings.get('setpoints', [])
         master = settings.get('master_rtd', {})
 
         session = CalibrationSession(
@@ -241,7 +243,7 @@ class SetupScreen(QWidget):
 
     def _refresh_setpoints_display(self) -> None:
         settings = self._store.load()
-        sps = sorted(settings.get('setpoints', []))
+        sps = settings.get('setpoints', [])
         if sps:
             self._sp_list_label.setText('  ·  '.join(f'{sp:.0f} °C' for sp in sps))
         else:

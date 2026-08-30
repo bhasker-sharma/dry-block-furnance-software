@@ -29,6 +29,16 @@ def _app_root() -> Path:
 
 SETTINGS_PATH = _app_root() / 'data' / 'settings.json'
 
+# Where the uploaded company logo is stored. Kept alongside settings.json
+# (not inside it) since it's binary — settings.json only stores the path.
+ASSETS_DIR = SETTINGS_PATH.parent / 'assets'
+_LOGO_BASENAME = 'company_logo'
+
+# The logo must be exactly this size so future report layouts can place it
+# without per-file scaling logic. Enforced in the UI (QImage dimension
+# check) before save_logo() is ever called.
+REQUIRED_LOGO_SIZE = (300, 150)  # (width, height) in px
+
 # SOUR:STAB:LIM range per the 9144 protocol (Digital Interface §6.4) —
 # values outside this go in the instrument's own error queue and are
 # rejected, so anything from settings.json (hand-edited, stale, or from
@@ -55,11 +65,29 @@ DEFAULTS: dict[str, Any] = {
     # None until the operator picks a folder in Settings — required before
     # a calibration can be started (see is_reports_dir_configured()).
     'reports_dir': None,
+    # Lab/company identity — set once in Settings, used by report_gen in
+    # future to brand the certificate header. logo_path points at the copy
+    # SettingsStore.save_logo() makes under ASSETS_DIR, not the original
+    # file the user picked.
+    'user_profile': {
+        'company_name': '',
+        'company_address': '',
+        'certificate_prefix': '',
+        'logo_path': None,
+    },
     # stability_limit_c is pushed to the instrument as SOUR:STAB:LIM on
     # connect — the tolerance SOUR:STAB:TEST? judges against. 9144 range
     # is 0.01-9.99 C; its own datasheet stability spec is ~0.03 C (50 C)
     # to ~0.05 C (660 C), so 0.05 is a safe default across the full range.
-    'manufacturer': {'stability_limit_c': 0.05},
+    # reference_equipment / model_no / serial_no describe the reference
+    # standard used to calibrate/verify this instrument itself — PIN-gated
+    # in the UI along with stability_limit_c.
+    'manufacturer': {
+        'stability_limit_c': 0.05,
+        'reference_equipment': '',
+        'model_no': '',
+        'serial_no': '',
+    },
 }
 
 
@@ -98,3 +126,23 @@ class SettingsStore:
         """A calibration can't be started until the operator has picked
         where saved certificates go — see reports_dir in DEFAULTS."""
         return bool(self.load().get('reports_dir'))
+
+    def save_logo(self, source_path: str) -> str:
+        """Copy an already dimension-validated logo image into ASSETS_DIR,
+        replacing any previous logo (even one with a different extension),
+        and return the stored path to save into user_profile.logo_path.
+
+        Dimension checking happens in the UI (QImage), not here — this
+        store has no Qt/Pillow dependency and just moves bytes."""
+        src = Path(source_path)
+        ASSETS_DIR.mkdir(parents=True, exist_ok=True)
+        for old in ASSETS_DIR.glob(f'{_LOGO_BASENAME}.*'):
+            old.unlink(missing_ok=True)
+        dest = ASSETS_DIR / f'{_LOGO_BASENAME}{src.suffix.lower()}'
+        dest.write_bytes(src.read_bytes())
+        return str(dest)
+
+    def remove_logo(self) -> None:
+        """Delete the stored logo file, if any."""
+        for old in ASSETS_DIR.glob(f'{_LOGO_BASENAME}.*'):
+            old.unlink(missing_ok=True)

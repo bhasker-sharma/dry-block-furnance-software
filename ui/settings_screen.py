@@ -4,17 +4,42 @@ from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox,
     QLineEdit, QGroupBox, QFormLayout, QScrollArea, QFrame,
     QMessageBox, QPushButton, QDoubleSpinBox, QDialog,
-    QDialogButtonBox, QInputDialog, QSizePolicy, QFileDialog
+    QDialogButtonBox, QInputDialog, QSizePolicy, QFileDialog,
+    QPlainTextEdit
 )
 from PyQt5.QtCore import Qt, pyqtSignal, QTimer
-from PyQt5.QtGui import QValidator
+from PyQt5.QtGui import QValidator, QImage, QPixmap
 
 from ui.widgets import make_button
 from db.settings_store import (
     SettingsStore, STABILITY_LIMIT_MIN, STABILITY_LIMIT_MAX, clamp_stability_limit,
+    REQUIRED_LOGO_SIZE,
 )
 
-MANUFACTURER_PIN = '1234'
+MANUFACTURER_PIN = '123456'
+
+
+def _is_unimodal(values: list[float]) -> bool:
+    """True if values rise strictly to at most one peak and then fall
+    strictly — i.e. at most one reversal from ascending to descending.
+
+    Purely ascending (peak at the last element) and purely descending
+    (peak at the first element) both qualify, since a run in only one
+    direction never reverses. Walk the ascending run from the start, then
+    the descending run from wherever that stopped; if that reaches the
+    last element, there was only ever one reversal (the peak) — anything
+    left over means a second reversal (a valley then another rise, or a
+    repeated value), which isn't a valid sweep order.
+    """
+    n = len(values)
+    if n <= 2:
+        return True
+    i = 0
+    while i + 1 < n and values[i] < values[i + 1]:
+        i += 1
+    while i + 1 < n and values[i] > values[i + 1]:
+        i += 1
+    return i == n - 1
 
 
 class _UnboundedSpinBox(QDoubleSpinBox):
@@ -26,13 +51,31 @@ class _UnboundedSpinBox(QDoubleSpinBox):
     it, so rather than keep guessing at the exact internal heuristic, this
     overrides validate() to accept any string that parses as a number,
     leaving out-of-range correction to Qt's normal fixup()-on-focus-lost
-    behavior (unchanged, still clamps to min/max once you tab away)."""
+    behavior (unchanged, still clamps to min/max once you tab away).
+
+    While editing, Qt keeps the suffix (' °C') inside the text handed to
+    validate() — e.g. typing into an empty box produces "9 °C", "99 °C",
+    "999 °C", etc, not bare digits. The first version of this override ran
+    float() on that raw string, which always raised (suffix isn't
+    numeric), so every keystroke came back Invalid and fixup() reverted
+    the field to its last committed value the moment focus left it —
+    multi-digit entry (e.g. 600, 9999) looked like it silently "didn't
+    take". Strip prefix/suffix before parsing, same as Qt's own default
+    validator does internally, so typed numbers are actually accepted."""
 
     def validate(self, text: str, pos: int):
-        if text in ('', '-'):
+        stripped = text
+        prefix, suffix = self.prefix(), self.suffix()
+        if prefix and stripped.startswith(prefix):
+            stripped = stripped[len(prefix):]
+        if suffix and stripped.endswith(suffix):
+            stripped = stripped[:len(stripped) - len(suffix)]
+        stripped = stripped.strip()
+
+        if stripped in ('', '-'):
             return (QValidator.Intermediate, text, pos)
         try:
-            float(text)
+            float(stripped)
         except ValueError:
             return (QValidator.Invalid, text, pos)
         return (QValidator.Acceptable, text, pos)
@@ -48,6 +91,7 @@ class SettingsScreen(QWidget):
         self._cmc_rows: list[tuple] = []
         self._sp_widgets: list[QDoubleSpinBox] = []
         self._sp_rows: list[tuple] = []
+        self._u_logo_path: str | None = None
         self._build_ui()
         self._load_into_ui()
 
@@ -90,7 +134,11 @@ class SettingsScreen(QWidget):
         cv.setSpacing(16)
         cv.setAlignment(Qt.AlignTop)
 
-        cv.addWidget(self._build_serial_card())
+        row1 = QHBoxLayout()
+        row1.setSpacing(16)
+        row1.addWidget(self._build_serial_card(), 1)
+        row1.addWidget(self._build_user_profile_card(), 1)
+        cv.addLayout(row1)
 
         row2 = QHBoxLayout()
         row2.setSpacing(16)
@@ -104,13 +152,126 @@ class SettingsScreen(QWidget):
         row3.addWidget(self._build_master_card(), 1)
         cv.addLayout(row3)
 
-        cv.addWidget(self._build_reports_card())
-        cv.addWidget(self._build_manufacturer_card())
+        row4 = QHBoxLayout()
+        row4.setSpacing(16)
+        row4.addWidget(self._build_reports_card(), 1)
+        row4.addWidget(self._build_manufacturer_card(), 1)
+        cv.addLayout(row4)
 
         scroll.setWidget(content)
         root.addWidget(scroll)
 
     # ------------------------------------------------------------------
+    def _build_user_profile_card(self) -> QGroupBox:
+        """Company identity — logo, name, address, certificate prefix.
+        Stored under user_profile in settings.json for future use when
+        report_gen builds the certificate header."""
+        box = QGroupBox('User Settings — Company Details')
+        box.setObjectName('card')
+        box.setStyleSheet('QGroupBox{border:1px solid #d1d9e6;}')
+        outer = QHBoxLayout(box)
+        outer.setSpacing(20)
+
+        # -- logo column --
+        logo_col = QVBoxLayout()
+        req_w, req_h = REQUIRED_LOGO_SIZE
+
+        self._logo_preview = QLabel('No logo\nuploaded')
+        self._logo_preview.setFixedSize(req_w // 2, req_h // 2)
+        self._logo_preview.setAlignment(Qt.AlignCenter)
+        self._logo_preview.setStyleSheet(
+            'border:1px dashed #d1d9e6;color:#a0aec0;font-size:10px;'
+            'background:#f7f9fc;border-radius:4px;'
+        )
+        logo_col.addWidget(self._logo_preview, 0, Qt.AlignHCenter)
+
+        logo_btns = QHBoxLayout()
+        upload_btn = make_button('Upload Logo…', 'ghost')
+        upload_btn.clicked.connect(self._on_upload_logo)
+        remove_btn = make_button('Remove', 'ghost')
+        remove_btn.clicked.connect(self._on_remove_logo)
+        logo_btns.addWidget(upload_btn)
+        logo_btns.addWidget(remove_btn)
+        logo_col.addLayout(logo_btns)
+
+        logo_note = QLabel(f'Exactly {req_w} × {req_h} px.\nUsed on future certificates.')
+        logo_note.setStyleSheet('font-size:10px;color:#a0aec0;')
+        logo_note.setAlignment(Qt.AlignHCenter)
+        logo_note.setWordWrap(True)
+        logo_col.addWidget(logo_note)
+        logo_col.addStretch()
+
+        outer.addLayout(logo_col)
+
+        # -- form column --
+        form = QFormLayout()
+        form.setVerticalSpacing(10)
+        form.setHorizontalSpacing(14)
+
+        self._u_company_name = QLineEdit()
+        self._u_company_name.setPlaceholderText('Company name')
+
+        self._u_company_address = QPlainTextEdit()
+        self._u_company_address.setPlaceholderText('Company address')
+        self._u_company_address.setFixedHeight(56)
+
+        self._u_cert_prefix = QLineEdit()
+        self._u_cert_prefix.setPlaceholderText('e.g. TIPL-CAL-')
+
+        form.addRow('Company Name',      self._u_company_name)
+        form.addRow('Company Address',   self._u_company_address)
+        form.addRow('Certificate Prefix', self._u_cert_prefix)
+
+        prefix_note = QLabel(
+            'Prepended to every saved certificate/report file name going forward.'
+        )
+        prefix_note.setStyleSheet('font-size:11px;color:#a0aec0;')
+        prefix_note.setWordWrap(True)
+        form.addRow('', prefix_note)
+
+        outer.addLayout(form, 1)
+        return box
+
+    def _on_upload_logo(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, 'Choose Company Logo', str(Path.home()),
+            'Images (*.png *.jpg *.jpeg *.bmp)'
+        )
+        if not path:
+            return
+        img = QImage(path)
+        if img.isNull():
+            QMessageBox.warning(self, 'Invalid Image', 'Could not read that image file.')
+            return
+        req_w, req_h = REQUIRED_LOGO_SIZE
+        if img.width() != req_w or img.height() != req_h:
+            QMessageBox.warning(
+                self, 'Wrong Dimensions',
+                f'Logo must be exactly {req_w} × {req_h} px.\n'
+                f'Selected image is {img.width()} × {img.height()} px.'
+            )
+            return
+        self._u_logo_path = self._store.save_logo(path)
+        self._refresh_logo_preview()
+
+    def _on_remove_logo(self) -> None:
+        if self._u_logo_path is None:
+            return
+        self._store.remove_logo()
+        self._u_logo_path = None
+        self._refresh_logo_preview()
+
+    def _refresh_logo_preview(self) -> None:
+        req_w, req_h = REQUIRED_LOGO_SIZE
+        if self._u_logo_path and Path(self._u_logo_path).exists():
+            pix = QPixmap(self._u_logo_path)
+            self._logo_preview.setPixmap(
+                pix.scaled(req_w // 2, req_h // 2, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            )
+        else:
+            self._logo_preview.setPixmap(QPixmap())
+            self._logo_preview.setText('No logo\nuploaded')
+
     def _build_serial_card(self) -> QGroupBox:
         box = QGroupBox('Serial Port Configuration')
         box.setObjectName('card')
@@ -185,6 +346,9 @@ class SettingsScreen(QWidget):
         self._range_max.setSuffix(' °C')
         self._range_max.setValue(300)
 
+        self._range_min.editingFinished.connect(self._on_range_changed)
+        self._range_max.editingFinished.connect(self._on_range_changed)
+
         form.addRow('Minimum', self._range_min)
         form.addRow('Maximum', self._range_max)
 
@@ -194,6 +358,26 @@ class SettingsScreen(QWidget):
         form.addRow('', note)
 
         return box
+
+    def _on_range_changed(self) -> None:
+        """Re-apply the (possibly just-edited, not-yet-saved) calibrator
+        range to every already-added CMC/setpoint row's spinbox.
+
+        A row's spinbox only gets setRange() once, at the moment it's
+        created — via the '+ Add …' button, using whatever the range
+        fields showed *then*. If the range fields are edited afterwards,
+        existing rows never hear about it and keep clamping to the old
+        bounds, which made it look like you had to Save the range before
+        you could add/edit a CMC point or setpoint in the new part of it.
+        Refreshing every row's bounds here means the range fields alone
+        are the source of truth, live — no save-first step needed."""
+        rmin, rmax = self._range_min.value(), self._range_max.value()
+        if rmin >= rmax:
+            return
+        for temp_spin, _, _ in self._cmc_rows:
+            temp_spin.setRange(rmin, rmax)
+        for spin in self._sp_widgets:
+            spin.setRange(rmin, rmax)
 
     def _build_cmc_card(self) -> QGroupBox:
         box = QGroupBox('CMC — Calibration & Measurement Capability')
@@ -242,7 +426,12 @@ class SettingsScreen(QWidget):
         self._sp_count_label.setStyleSheet('font-size:11px;color:#6b7a90;')
         v.addWidget(self._sp_count_label)
 
-        order_note = QLabel('Setpoint Order: Ascending always — setpoints are always sent in ascending temperature order.')
+        order_note = QLabel(
+            'Setpoint Order: sent in the order entered below. Must rise to at most '
+            'one peak then fall — purely ascending, purely descending, or ascending '
+            'then descending (e.g. 200, 300, 400, 700, 600, 250, 100) are all fine; '
+            'reversing direction more than once is not.'
+        )
         order_note.setStyleSheet(
             'color:#6b7a90;font-size:11px;background:#f7f9fc;'
             'border-radius:5px;padding:4px 8px;'
@@ -426,6 +615,7 @@ class SettingsScreen(QWidget):
         spin.setDecimals(1)
         spin.setValue(value)
         spin.setSuffix(' °C')
+        spin.setSingleStep(100)  # ↑/↓ arrows step by 100; typed values are unrestricted
         spin.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
         del_btn = QPushButton('✕')
@@ -472,7 +662,7 @@ class SettingsScreen(QWidget):
     # ------------------------------------------------------------------
     def _open_manufacturer_settings(self) -> None:
         pin, ok = QInputDialog.getText(
-            self, 'Manufacturer Settings', 'Enter 4-digit PIN:',
+            self, 'Manufacturer Settings', 'Enter 6-digit PIN:',
             QLineEdit.Password
         )
         if not ok:
@@ -498,6 +688,17 @@ class SettingsScreen(QWidget):
         limit_spin.setSuffix(' °C')
         limit_spin.setValue(current_limit)
         form.addRow('Stability Tolerance', limit_spin)
+
+        ref_equip = QLineEdit(mfg.get('reference_equipment', ''))
+        ref_equip.setPlaceholderText('Reference equipment used')
+        model_no = QLineEdit(mfg.get('model_no', ''))
+        model_no.setPlaceholderText('Model number')
+        serial_no = QLineEdit(mfg.get('serial_no', ''))
+        serial_no.setPlaceholderText('Serial number')
+
+        form.addRow('Reference Equipment Used', ref_equip)
+        form.addRow('Model No',                 model_no)
+        form.addRow('Serial No',                serial_no)
 
         note = QLabel(
             'Sent to the instrument as SOUR:STAB:LIM — the band SOUR:STAB:TEST? '
@@ -537,7 +738,12 @@ class SettingsScreen(QWidget):
         def _on_save():
             value = limit_spin.value()
             settings = self._store.load()
-            settings['manufacturer'] = {'stability_limit_c': value}
+            settings['manufacturer'] = {
+                'stability_limit_c': value,
+                'reference_equipment': ref_equip.text().strip(),
+                'model_no': model_no.text().strip(),
+                'serial_no': serial_no.text().strip(),
+            }
             self._store.save(settings)
             if self._comm is not None and getattr(self._comm, 'is_connected', False):
                 ok = self._comm.set_stability_limit(value)
@@ -563,6 +769,13 @@ class SettingsScreen(QWidget):
     # ------------------------------------------------------------------
     def _load_into_ui(self) -> None:
         s = self._store.load()
+
+        profile = s.get('user_profile', {})
+        self._u_company_name.setText(profile.get('company_name', ''))
+        self._u_company_address.setPlainText(profile.get('company_address', ''))
+        self._u_cert_prefix.setText(profile.get('certificate_prefix', ''))
+        self._u_logo_path = profile.get('logo_path')
+        self._refresh_logo_preview()
 
         serial = s.get('serial', {})
         self._iface.setCurrentText(serial.get('iface', 'RS-232'))
@@ -615,11 +828,20 @@ class SettingsScreen(QWidget):
                                  'CMC is ON — enter at least one CMC point before saving.')
             return
 
-        setpoints = sorted(s.value() for s in self._sp_widgets if s.value() > 0)
+        setpoints = [s.value() for s in self._sp_widgets if s.value() > 0]
         rmin, rmax = self._range_min.value(), self._range_max.value()
         if any(sp < rmin or sp > rmax for sp in setpoints):
             QMessageBox.warning(self, 'Setpoint Out of Range',
                                  'All setpoints must stay within the calibrator range.')
+            return
+        if not _is_unimodal(setpoints):
+            QMessageBox.warning(
+                self, 'Invalid Setpoint Order',
+                'Setpoints must rise to at most one peak and then fall — purely '
+                'ascending, purely descending, or ascending then descending '
+                '(e.g. 200, 300, 400, 700, 600, 250, 100) are all fine. Reversing '
+                'direction more than once, or repeating a value, is not allowed.'
+            )
             return
 
         existing = self._store.load()
@@ -637,6 +859,12 @@ class SettingsScreen(QWidget):
             'cmc_points': cmc_points,
             'setpoints': setpoints,
             'reports_dir': self._reports_dir_field.text().strip() or None,
+            'user_profile': {
+                'company_name':       self._u_company_name.text().strip(),
+                'company_address':    self._u_company_address.toPlainText().strip(),
+                'certificate_prefix': self._u_cert_prefix.text().strip(),
+                'logo_path':          self._u_logo_path,
+            },
             'master_rtd': {
                 'instrument_type': self._m_type.text().strip(),
                 'make':            self._m_make.text().strip(),
