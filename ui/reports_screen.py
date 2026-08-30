@@ -1,21 +1,17 @@
 """
 Reports Screen — search and retrieve calibration records.
 
-Filter strategy (changed from date-based to identity-based):
-  - Certificate No  : unique per session, direct match
-  - UUT Tag Number  : how the instrument is identified in the plant
-  - UUT Serial No   : how the instrument is identified by manufacturer
-  All three are substring searches, case-insensitive.
-
-Why remove date filters?
-Because every certificate number is unique and sequential.
-"TIPL/CAL/2026/0042" tells you the year and sequence immediately.
-Date range filters add UI complexity that lab operators rarely use.
+Filter strategy: UUT Serial No only.
+Every UUT must have a serial number entered at calibration time (see
+SetupScreen), and it's how the instrument is identified by its
+manufacturer — a stable, always-present key. Certificate No and Tag
+Number are shown in the results table but aren't separate search
+filters; a substring serial-no search is enough to find a record.
 """
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QLineEdit, QTableWidget, QTableWidgetItem,
-    QHeaderView, QFrame, QScrollArea, QGroupBox, QSizePolicy
+    QHeaderView, QFrame, QScrollArea, QGroupBox, QSizePolicy, QMessageBox
 )
 from PyQt5.QtCore import Qt, pyqtSignal
 
@@ -24,7 +20,7 @@ from models.calibration_session import CalibrationSession
 
 
 class ReportsScreen(QWidget):
-    search_requested = pyqtSignal(str, str, str)   # cert_no, tag_number, serial_no
+    search_requested = pyqtSignal(str)   # serial_no
     view_requested   = pyqtSignal(object)
     pdf_requested    = pyqtSignal(object)
 
@@ -81,21 +77,15 @@ class ReportsScreen(QWidget):
         h = QHBoxLayout(box)
         h.setSpacing(14)
 
-        for label, attr, placeholder in [
-            ('Certificate No',  '_f_cert',   'e.g. TIPL/CAL/2026/001'),
-            ('UUT Tag Number',  '_f_tag',    'e.g. RTD-Lab-01'),
-            ('UUT Serial No',   '_f_serial', 'e.g. SN-20240519'),
-        ]:
-            col = QVBoxLayout()
-            lbl = QLabel(label)
-            lbl.setStyleSheet('font-size:11px;color:#6b7a90;font-weight:400;')
-            inp = QLineEdit()
-            inp.setPlaceholderText(placeholder)
-            inp.returnPressed.connect(self._on_search)
-            setattr(self, attr, inp)
-            col.addWidget(lbl)
-            col.addWidget(inp)
-            h.addLayout(col, 1)
+        col = QVBoxLayout()
+        lbl = QLabel('UUT Serial No (required)')
+        lbl.setStyleSheet('font-size:11px;color:#6b7a90;font-weight:400;')
+        self._f_serial = QLineEdit()
+        self._f_serial.setPlaceholderText('e.g. SN-20240519')
+        self._f_serial.returnPressed.connect(self._on_search)
+        col.addWidget(lbl)
+        col.addWidget(self._f_serial)
+        h.addLayout(col, 1)
 
         btn_col = QVBoxLayout()
         btn_col.addStretch()
@@ -186,17 +176,16 @@ class ReportsScreen(QWidget):
 
     # ------------------------------------------------------------------
     def _on_search(self) -> None:
-        self.search_requested.emit(
-            self._f_cert.text().strip(),
-            self._f_tag.text().strip(),
-            self._f_serial.text().strip(),
-        )
+        serial = self._f_serial.text().strip()
+        if not serial:
+            QMessageBox.warning(self, 'UUT Serial No required',
+                                 'Enter a UUT Serial No to search.')
+            return
+        self.search_requested.emit(serial)
 
     def _on_clear(self) -> None:
-        self._f_cert.clear()
-        self._f_tag.clear()
         self._f_serial.clear()
-        self.search_requested.emit('', '', '')
+        self.search_requested.emit('')
 
     def _on_double_click(self, row: int, _col: int) -> None:
         if row < len(self._sessions):

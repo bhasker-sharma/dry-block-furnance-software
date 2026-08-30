@@ -29,9 +29,11 @@ def _app_root() -> Path:
 
 SETTINGS_PATH = _app_root() / 'data' / 'settings.json'
 
-# Where the uploaded company logo is stored. Kept alongside settings.json
-# (not inside it) since it's binary — settings.json only stores the path.
-ASSETS_DIR = SETTINGS_PATH.parent / 'assets'
+# Where the uploaded company logo is stored. Root-level (sibling of
+# reports/), not under data/ — it's binary, per-install/per-customer, and
+# not something a fresh install ships with, same reasoning as reports/
+# (see db/report_store.py). settings.json only stores the path to it.
+ASSETS_DIR = _app_root() / 'customer_assets'
 _LOGO_BASENAME = 'company_logo'
 
 # The logo must be exactly this size so future report layouts can place it
@@ -61,10 +63,6 @@ DEFAULTS: dict[str, Any] = {
     'cmc_points': [],          # [{'temperature': float, 'cmc': float}, ...]
     'setpoints': [],           # [float, ...]
     'master_rtd': InstrumentInfo().to_dict(),
-    # Where saved calibration certificates (reports/*.json) are written.
-    # None until the operator picks a folder in Settings — required before
-    # a calibration can be started (see is_reports_dir_configured()).
-    'reports_dir': None,
     # Lab/company identity — set once in Settings, used by report_gen in
     # future to brand the certificate header. logo_path points at the copy
     # SettingsStore.save_logo() makes under ASSETS_DIR, not the original
@@ -121,11 +119,6 @@ class SettingsStore:
         has_range = rng.get('min') is not None and rng.get('max') is not None
         has_setpoints = bool(s.get('setpoints'))
         return has_range and has_setpoints
-
-    def is_reports_dir_configured(self) -> bool:
-        """A calibration can't be started until the operator has picked
-        where saved certificates go — see reports_dir in DEFAULTS."""
-        return bool(self.load().get('reports_dir'))
 
     def save_logo(self, source_path: str) -> str:
         """Copy an already dimension-validated logo image into ASSETS_DIR,

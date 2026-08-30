@@ -46,12 +46,43 @@ class ReportStore:
         self._dir = reports_dir
         self._dir.mkdir(parents=True, exist_ok=True)
 
-    def set_reports_dir(self, reports_dir: Path) -> None:
-        """Switch to a lab-chosen storage folder (Settings screen). Takes
-        effect immediately — the next save()/search()/list_all() call uses
-        the new location."""
-        self._dir = Path(reports_dir)
-        self._dir.mkdir(parents=True, exist_ok=True)
+    # ------------------------------------------------------------------
+    # Certificate numbering
+    # ------------------------------------------------------------------
+    def next_sequence(self) -> int:
+        """
+        Next 1-based certificate sequence number for this reports folder.
+
+        Derived from the highest sequence found in existing filenames
+        rather than a separate counter file, so it can never drift out of
+        sync with what's actually been saved (e.g. after a deleted report
+        or a folder copied in from elsewhere).
+        """
+        max_seq = 0
+        for path in self._dir.glob('*.json'):
+            seq = self._extract_sequence(path.stem)
+            if seq is not None:
+                max_seq = max(max_seq, seq)
+        return max_seq + 1
+
+    @staticmethod
+    def _extract_sequence(stem: str) -> Optional[int]:
+        """The last '_'-separated token of a cert filename is the 4-digit
+        sequence (see build_cert_no) — anything else is ignored."""
+        tail = stem.rsplit('_', 1)[-1]
+        return int(tail) if tail.isdigit() else None
+
+    @staticmethod
+    def build_cert_no(prefix: str, uut_serial: str, cal_date: date, seq: int) -> str:
+        """
+        Certificate number format: PREFIX_UUTSERIAL_DDMMYYYY_0001
+        Prefix is optional (Settings > certificate prefix); UUT serial and
+        date are always present. Sequence is zero-padded to 4 digits.
+        """
+        parts = [p for p in (prefix.strip(), uut_serial.strip()) if p]
+        parts.append(cal_date.strftime('%d%m%Y'))
+        parts.append(f'{seq:04d}')
+        return '_'.join(parts)
 
     # ------------------------------------------------------------------
     # Save

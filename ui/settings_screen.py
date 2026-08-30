@@ -152,11 +152,7 @@ class SettingsScreen(QWidget):
         row3.addWidget(self._build_master_card(), 1)
         cv.addLayout(row3)
 
-        row4 = QHBoxLayout()
-        row4.setSpacing(16)
-        row4.addWidget(self._build_reports_card(), 1)
-        row4.addWidget(self._build_manufacturer_card(), 1)
-        cv.addLayout(row4)
+        cv.addWidget(self._build_manufacturer_card())
 
         scroll.setWidget(content)
         root.addWidget(scroll)
@@ -482,43 +478,6 @@ class SettingsScreen(QWidget):
 
         return box
 
-    def _build_reports_card(self) -> QGroupBox:
-        box = QGroupBox('Reports Storage Location')
-        box.setObjectName('card')
-        box.setStyleSheet('QGroupBox{border:1px solid #d1d9e6;}')
-        v = QVBoxLayout(box)
-
-        row = QHBoxLayout()
-        self._reports_dir_field = QLineEdit()
-        self._reports_dir_field.setReadOnly(True)
-        self._reports_dir_field.setPlaceholderText(
-            'Not configured — choose a folder before starting a calibration'
-        )
-        row.addWidget(self._reports_dir_field, 1)
-        browse_btn = make_button('Browse…', 'ghost')
-        browse_btn.clicked.connect(self._on_browse_reports_dir)
-        row.addWidget(browse_btn)
-        v.addLayout(row)
-
-        note = QLabel(
-            'Saved calibration certificates (JSON, plus PDFs you export) are written '
-            'here — pick any folder on this PC, e.g. a backed-up or shared drive. '
-            'Required before a calibration can be started.'
-        )
-        note.setStyleSheet('font-size:11px;color:#a0aec0;margin-top:6px;')
-        note.setWordWrap(True)
-        v.addWidget(note)
-
-        return box
-
-    def _on_browse_reports_dir(self) -> None:
-        start_dir = self._reports_dir_field.text() or str(Path.home())
-        chosen = QFileDialog.getExistingDirectory(
-            self, 'Choose Reports Storage Folder', start_dir
-        )
-        if chosen:
-            self._reports_dir_field.setText(chosen)
-
     def _build_manufacturer_card(self) -> QGroupBox:
         box = QGroupBox('Manufacturer Settings')
         box.setObjectName('card')
@@ -804,8 +763,6 @@ class SettingsScreen(QWidget):
         self._m_serial.setText(master.get('serial_no', ''))
         self._m_cert.setText(master.get('cert_number', ''))
 
-        self._reports_dir_field.setText(s.get('reports_dir') or '')
-
         self._cmc_add_btn.setEnabled(self._cmc_status.currentText() == 'ON')
         self._update_setpoints_lock()
 
@@ -858,7 +815,6 @@ class SettingsScreen(QWidget):
             'cmc_enabled': cmc_enabled,
             'cmc_points': cmc_points,
             'setpoints': setpoints,
-            'reports_dir': self._reports_dir_field.text().strip() or None,
             'user_profile': {
                 'company_name':       self._u_company_name.text().strip(),
                 'company_address':    self._u_company_address.toPlainText().strip(),

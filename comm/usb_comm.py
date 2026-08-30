@@ -67,11 +67,6 @@ class USBComm(BaseComm):
                         stopbits=serial.STOPBITS_ONE, timeout=timeout_s,
                     )
                     self._socket = None
-                    # No explicit flush needed here — every query in
-                    # _query_float()/_query_str() (including the first one,
-                    # *IDN? in _verify_instrument()) now drains stale bytes
-                    # immediately before writing, so the handshake gets the
-                    # same protection as everything else.
             except (serial.SerialException, OSError):
                 self._serial = None
                 self._socket = None
@@ -83,6 +78,18 @@ class USBComm(BaseComm):
 
             if not self.is_connected:
                 continue
+
+            # Settle before the handshake: a byte written by the far end
+            # just before we opened the port (e.g. a virtual null-modem
+            # driver like com0com replaying its own internal buffer, or a
+            # response to a query from a prior session) can still be in
+            # transit at the instant _drain_stale() purges inside the
+            # first query, landing right after the purge and getting read
+            # as the answer — shifting every reply by one message from
+            # there on. A short wait lets any such straggler arrive before
+            # we purge, so the purge actually catches it.
+            time.sleep(0.2)
+            self._drain_stale()
 
             # Port opened — now verify it's actually a HART/9144 (-P model)
             # before handing it to the rest of the app. There's no

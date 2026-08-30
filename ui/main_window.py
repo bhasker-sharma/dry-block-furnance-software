@@ -63,8 +63,7 @@ class MainWindow(QMainWindow):
             self.setWindowIcon(QIcon(str(icon_path)))
 
         self._settings  = SettingsStore()
-        reports_dir = self._settings.load().get('reports_dir')
-        self._store = ReportStore(Path(reports_dir)) if reports_dir else ReportStore()
+        self._store     = ReportStore()
         self._comm      = USBComm()
         self._engine: CalibrationEngine | None = None
         self._current_session: CalibrationSession | None = None
@@ -216,10 +215,6 @@ class MainWindow(QMainWindow):
         saved_port = settings.get('serial', {}).get('port')
         if saved_port:
             self._live_scr.set_port(saved_port)
-
-        reports_dir = settings.get('reports_dir')
-        if reports_dir:
-            self._store.set_reports_dir(Path(reports_dir))
 
     # ------------------------------------------------------------------
     # Connection
@@ -390,13 +385,9 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
     # Reports
     # ------------------------------------------------------------------
-    @pyqtSlot(str, str, str)
-    def _on_search_reports(self, cert_no: str, tag_number: str, serial_no: str) -> None:
-        sessions = self._store.search(
-            cert_no=cert_no,
-            tag_number=tag_number,
-            serial_no=serial_no,
-        )
+    @pyqtSlot(str)
+    def _on_search_reports(self, serial_no: str) -> None:
+        sessions = self._store.search(serial_no=serial_no)
         self._reports_scr.load_sessions(sessions)
 
     def _show_report(self, session: CalibrationSession | None) -> None:

@@ -13,6 +13,9 @@ data/settings.json
 # ── Calibration reports (customer data — must not be pushed) ───────
 reports/*.json
 
+# ── Company logo (per-lab upload, not fixed across installs) ───────
+customer_assets/
+
 # ── PyInstaller / build output ──────────────────────────────────────
 build/
 dist/

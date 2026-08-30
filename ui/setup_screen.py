@@ -21,6 +21,7 @@ from PyQt5.QtCore import Qt, pyqtSignal
 from ui.widgets import make_button
 from models.calibration_session import CalibrationSession, InstrumentInfo
 from db.settings_store import SettingsStore
+from db.report_store import ReportStore
 
 
 def _form_card(title: str, color: str = '#d1d9e6') -> tuple[QGroupBox, QFormLayout]:
@@ -115,7 +116,9 @@ class SetupScreen(QWidget):
         box, form = _form_card('Certificate Details')
 
         self._cert_input  = QLineEdit()
-        self._cert_input.setPlaceholderText('TIPL/CAL/2026/0001')
+        self._cert_input.setPlaceholderText('Fill UUT Serial No to generate')
+        self._cert_input.setEnabled(False)
+        self._cert_input.setStyleSheet('color:#a0aec0;')
         self._date_input  = QLineEdit(date.today().isoformat())
         self._date_input.setEnabled(False)
         self._date_input.setStyleSheet('color:#a0aec0;')
@@ -129,14 +132,14 @@ class SetupScreen(QWidget):
         self._verif_input = QLineEdit()
         self._verif_input.setPlaceholderText('Supervisor name')
 
-        form.addRow('Certificate No',     self._cert_input)
-        form.addRow('Date (auto-filled)', self._date_input)
-        form.addRow('Customer',           self._cust_input)
-        form.addRow('Address',            self._addr_input)
-        form.addRow('Test Performed By',  self._by_input)
-        form.addRow('Verified By',        self._verif_input)
+        form.addRow('Certificate No (auto)', self._cert_input)
+        form.addRow('Date (auto-filled)',    self._date_input)
+        form.addRow('Customer',              self._cust_input)
+        form.addRow('Address',               self._addr_input)
+        form.addRow('Test Performed By',     self._by_input)
+        form.addRow('Verified By',           self._verif_input)
 
-        for w in (self._cert_input, self._cust_input, self._by_input):
+        for w in (self._cust_input, self._by_input):
             w.textChanged.connect(self._check_valid)
 
         return box
@@ -160,11 +163,6 @@ class SetupScreen(QWidget):
         note.setWordWrap(True)
         v.addWidget(note)
 
-        self._reports_dir_note = QLabel('—')
-        self._reports_dir_note.setStyleSheet('font-size:11px;color:#f59e0b;margin-top:4px;')
-        self._reports_dir_note.setWordWrap(True)
-        v.addWidget(self._reports_dir_note)
-
         v.addStretch()
         return box
 
@@ -184,9 +182,36 @@ class SetupScreen(QWidget):
         form.addRow('Serial No',       self._u_serial)
         form.addRow('Tag Number',      self._u_tag)
 
-        self._u_serial.textChanged.connect(self._check_valid)
+        self._u_serial.textChanged.connect(self._on_uut_serial_changed)
         self._u_tag.textChanged.connect(self._check_valid)
         return box
+
+    # ------------------------------------------------------------------
+    # Certificate No — auto-generated as PREFIX_UUTSERIAL_DDMMYYYY_0001
+    # ------------------------------------------------------------------
+    def _on_uut_serial_changed(self) -> None:
+        self._update_cert_preview()
+        self._check_valid()
+
+    def _compute_cert_no(self, settings: dict, u_ser: str) -> str:
+        """Recomputed from current settings + the reports folder each time
+        it's needed (preview and Start) so it always reflects the latest
+        saved report count, not a value cached from when the screen opened.
+        Reports always live in the fixed app-folder location (ReportStore's
+        default) — not something the operator configures."""
+        if not u_ser:
+            return ''
+        prefix = settings.get('user_profile', {}).get('certificate_prefix', '')
+        seq = ReportStore().next_sequence()
+        return ReportStore.build_cert_no(prefix, u_ser, date.today(), seq)
+
+    def _update_cert_preview(self) -> None:
+        settings = self._store.load()
+        u_ser = self._u_serial.text().strip()
+        cert_no = self._compute_cert_no(settings, u_ser)
+        self._cert_input.setText(cert_no)
+        if not cert_no:
+            self._cert_input.setPlaceholderText('Fill UUT Serial No to generate')
 
     # ------------------------------------------------------------------
     # Validation — Start button enabled only when mandatory fields filled
@@ -198,9 +223,8 @@ class SetupScreen(QWidget):
         u_ser  = self._u_serial.text().strip()
         u_tag  = self._u_tag.text().strip()
         settings = self._store.load()
-        sps         = settings.get('setpoints', [])
-        reports_dir = settings.get('reports_dir')
-        ok = bool(cert and cust and by and u_ser and u_tag and sps and reports_dir)
+        sps = settings.get('setpoints', [])
+        ok = bool(cert and cust and by and u_ser and u_tag and sps)
         self._start_btn.setEnabled(ok)
 
     # ------------------------------------------------------------------
@@ -212,9 +236,13 @@ class SetupScreen(QWidget):
         # order (at most one peak), so the saved order is the run order.
         setpoints = settings.get('setpoints', [])
         master = settings.get('master_rtd', {})
+        u_ser = self._u_serial.text().strip()
+        # Recomputed rather than read from the preview label, so the
+        # sequence number reflects reports saved after the screen opened.
+        cert_no = self._compute_cert_no(settings, u_ser)
 
         session = CalibrationSession(
-            cert_no=self._cert_input.text().strip(),
+            cert_no=cert_no,
             customer=self._cust_input.text().strip(),
             address=self._addr_input.toPlainText().strip(),
             performed_by=self._by_input.text().strip(),
@@ -226,19 +254,20 @@ class SetupScreen(QWidget):
                 instrument_type=self._u_type.text().strip(),
                 make=self._u_make.text().strip(),
                 model=self._u_model.text().strip(),
-                serial_no=self._u_serial.text().strip(),
+                serial_no=u_ser,
                 tag_number=self._u_tag.text().strip(),
             ),
         )
         self.start_requested.emit(session)
 
     def reset(self) -> None:
-        for w in (self._cert_input, self._cust_input, self._by_input, self._verif_input,
+        for w in (self._cust_input, self._by_input, self._verif_input,
                   self._u_type, self._u_make, self._u_model, self._u_serial, self._u_tag):
             w.clear()
         self._addr_input.clear()
         self._date_input.setText(date.today().isoformat())
         self._refresh_setpoints_display()
+        self._update_cert_preview()
         self._check_valid()
 
     def _refresh_setpoints_display(self) -> None:
@@ -249,14 +278,8 @@ class SetupScreen(QWidget):
         else:
             self._sp_list_label.setText('No setpoints configured — set them up in Settings.')
 
-        if settings.get('reports_dir'):
-            self._reports_dir_note.setText('')
-        else:
-            self._reports_dir_note.setText(
-                'Reports Storage Location not configured — set it in Settings before starting.'
-            )
-
     def showEvent(self, event) -> None:
         super().showEvent(event)
         self._refresh_setpoints_display()
+        self._update_cert_preview()
         self._check_valid()
