@@ -119,6 +119,13 @@ class ReportsScreen(QWidget):
         self._table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         self._table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         self._table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        # Actions column fixed wide enough for both buttons — left on
+        # ResizeToContents it sized to the "Actions" header text at
+        # table-build time (before any row/cell widget existed) and never
+        # grew to fit the View/PDF buttons added later per row, so they
+        # were clipped/overlapping inside a too-narrow column.
+        self._table.horizontalHeader().setSectionResizeMode(6, QHeaderView.Fixed)
+        self._table.setColumnWidth(6, 150)
         self._table.setEditTriggers(QTableWidget.NoEditTriggers)
         self._table.setAlternatingRowColors(True)
         self._table.setSelectionBehavior(QTableWidget.SelectRows)

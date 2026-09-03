@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from PyQt5.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox,
+    QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QComboBox,
     QLineEdit, QGroupBox, QFormLayout, QScrollArea, QFrame,
     QMessageBox, QPushButton, QDoubleSpinBox, QDialog,
     QDialogButtonBox, QInputDialog, QSizePolicy, QFileDialog,
@@ -112,7 +112,7 @@ class SettingsScreen(QWidget):
         vt = QVBoxLayout()
         title = QLabel('Communication & Settings')
         title.setObjectName('screen_title')
-        sub = QLabel('Serial port, calibrator range, CMC, setpoints and Master RTD')
+        sub = QLabel('Serial port, CMC, setpoints and Master RTD')
         sub.setObjectName('screen_sub')
         vt.addWidget(title)
         vt.addWidget(sub)
@@ -134,25 +134,33 @@ class SettingsScreen(QWidget):
         cv.setSpacing(16)
         cv.setAlignment(Qt.AlignTop)
 
-        row1 = QHBoxLayout()
-        row1.setSpacing(16)
-        row1.addWidget(self._build_serial_card(), 1)
-        row1.addWidget(self._build_user_profile_card(), 1)
-        cv.addLayout(row1)
+        # Range spinboxes are state only here — no card on this screen.
+        # They're edited inside the PIN-gated Manufacturer Settings dialog
+        # (_show_manufacturer_dialog) but read from here by CMC/setpoint
+        # row creation and by Save validation, so they must exist before
+        # any of that runs.
+        self._init_range_state()
 
-        row2 = QHBoxLayout()
-        row2.setSpacing(16)
-        row2.addWidget(self._build_range_card(), 1)
-        row2.addWidget(self._build_cmc_card(), 1)
-        cv.addLayout(row2)
-
-        row3 = QHBoxLayout()
-        row3.setSpacing(16)
-        row3.addWidget(self._build_setpoints_card(), 1)
-        row3.addWidget(self._build_master_card(), 1)
-        cv.addLayout(row3)
-
-        cv.addWidget(self._build_manufacturer_card())
+        # A single shared grid instead of 3 independent QHBoxLayouts — with
+        # separate row layouts, each row's left/right split is computed
+        # from only that row's two widgets, so the column boundary can
+        # land at a different x position per row (most visible once the
+        # window is narrow enough that some content can't shrink further),
+        # which looked like misaligned columns. One QGridLayout computes
+        # both column widths once for the whole grid, so every row shares
+        # the exact same boundary at any window size.
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(16)
+        grid.setVerticalSpacing(16)
+        grid.setColumnStretch(0, 1)
+        grid.setColumnStretch(1, 1)
+        grid.addWidget(self._build_serial_card(),       0, 0)
+        grid.addWidget(self._build_user_profile_card(), 0, 1)
+        grid.addWidget(self._build_setpoints_card(),    1, 0)
+        grid.addWidget(self._build_master_card(),       1, 1)
+        grid.addWidget(self._build_cmc_card(),          2, 0)
+        grid.addWidget(self._build_manufacturer_card(), 2, 1)
+        cv.addLayout(grid)
 
         scroll.setWidget(content)
         root.addWidget(scroll)
@@ -190,7 +198,7 @@ class SettingsScreen(QWidget):
         logo_btns.addWidget(remove_btn)
         logo_col.addLayout(logo_btns)
 
-        logo_note = QLabel(f'Exactly {req_w} × {req_h} px.\nUsed on future certificates.')
+        logo_note = QLabel(f'Exactly {req_w} × {req_h} px.\n')
         logo_note.setStyleSheet('font-size:10px;color:#a0aec0;')
         logo_note.setAlignment(Qt.AlignHCenter)
         logo_note.setWordWrap(True)
@@ -216,14 +224,7 @@ class SettingsScreen(QWidget):
 
         form.addRow('Company Name',      self._u_company_name)
         form.addRow('Company Address',   self._u_company_address)
-        form.addRow('Certificate Prefix', self._u_cert_prefix)
-
-        prefix_note = QLabel(
-            'Prepended to every saved certificate/report file name going forward.'
-        )
-        prefix_note.setStyleSheet('font-size:11px;color:#a0aec0;')
-        prefix_note.setWordWrap(True)
-        form.addRow('', prefix_note)
+        form.addRow('Certificate Number Prefix', self._u_cert_prefix)
 
         outer.addLayout(form, 1)
         return box
@@ -312,9 +313,8 @@ class SettingsScreen(QWidget):
         form.addRow('Retry Count',   self._retry)
 
         fixed = QLabel(
-            '8 data bits · no parity · 1 stop bit — fixed by the 9144, not '
-            'user-configurable. Baud rate above is the only thing that must match '
-            'the instrument\'s COMM SETUP menu.'
+            'Baud rate Should match the Intrument Baud rate in use.\n'
+            'Com port should be verified by the device manager - ports section'
         )
         fixed.setStyleSheet('font-size:11px;color:#a0aec0;padding:4px 0;')
         fixed.setWordWrap(True)
@@ -322,14 +322,12 @@ class SettingsScreen(QWidget):
 
         return box
 
-    def _build_range_card(self) -> QGroupBox:
-        box = QGroupBox('Dry Block Calibrator Range')
-        box.setObjectName('card')
-        box.setStyleSheet('QGroupBox{border:1px solid #d1d9e6;}')
-        form = QFormLayout(box)
-        form.setVerticalSpacing(10)
-        form.setHorizontalSpacing(14)
-
+    def _init_range_state(self) -> None:
+        """Dry block calibrator range — state only, no card on this
+        screen. Editing lives in the PIN-gated Manufacturer Settings
+        dialog (_show_manufacturer_dialog) now; these spinboxes just hold
+        the current value for CMC/setpoint row bounds and Save
+        validation, same as before the move."""
         self._range_min = _UnboundedSpinBox()
         self._range_min.setRange(-200, 999999)
         self._range_min.setDecimals(0)
@@ -344,16 +342,6 @@ class SettingsScreen(QWidget):
 
         self._range_min.editingFinished.connect(self._on_range_changed)
         self._range_max.editingFinished.connect(self._on_range_changed)
-
-        form.addRow('Minimum', self._range_min)
-        form.addRow('Maximum', self._range_max)
-
-        note = QLabel('Setpoints and CMC points must stay within this range.')
-        note.setStyleSheet('font-size:11px;color:#a0aec0;padding-top:4px;')
-        note.setWordWrap(True)
-        form.addRow('', note)
-
-        return box
 
     def _on_range_changed(self) -> None:
         """Re-apply the (possibly just-edited, not-yet-saved) calibrator
@@ -373,7 +361,7 @@ class SettingsScreen(QWidget):
         for temp_spin, _, _ in self._cmc_rows:
             temp_spin.setRange(rmin, rmax)
         for spin in self._sp_widgets:
-            spin.setRange(rmin, rmax)
+            spin.setRange(max(0.0, rmin), rmax)
 
     def _build_cmc_card(self) -> QGroupBox:
         box = QGroupBox('CMC — Calibration & Measurement Capability')
@@ -403,7 +391,6 @@ class SettingsScreen(QWidget):
         v.addWidget(self._cmc_add_btn)
 
         note = QLabel(
-            'CMC points are entered at temperatures that are multiples of 100. '
             'When CMC is ON, at least one CMC point is required before setpoints can be added.'
         )
         note.setStyleSheet('font-size:11px;color:#a0aec0;margin-top:6px;')
@@ -423,11 +410,11 @@ class SettingsScreen(QWidget):
         v.addWidget(self._sp_count_label)
 
         order_note = QLabel(
-            'Setpoint Order: sent in the order entered below. Must rise to at most '
-            'one peak then fall — purely ascending, purely descending, or ascending '
-            'then descending (e.g. 200, 300, 400, 700, 600, 250, 100) are all fine; '
-            'reversing direction more than once is not.'
+        'Setpoint Order: purely ascending, purely descending, or ascending then '
+        'descending (e.g. 200, 300, 400, 700, 600, 250, 100) '
+        'Reversing direction more than once is not permitted'
         )
+
         order_note.setStyleSheet(
             'color:#6b7a90;font-size:11px;background:#f7f9fc;'
             'border-radius:5px;padding:4px 8px;'
@@ -439,9 +426,15 @@ class SettingsScreen(QWidget):
         self._sp_container.setSpacing(5)
         v.addLayout(self._sp_container)
 
+        add_row = QHBoxLayout()
         self._sp_add_btn = make_button('+ Add setpoint', 'ghost')
         self._sp_add_btn.clicked.connect(lambda: self._add_sp_row(0.0))
-        v.addWidget(self._sp_add_btn)
+        add_row.addWidget(self._sp_add_btn)
+        add_row.addStretch()
+        sp_save_btn = make_button('Save Setpoints', 'primary')
+        sp_save_btn.clicked.connect(self._on_save)
+        add_row.addWidget(sp_save_btn)
+        v.addLayout(add_row)
 
         self._sp_lock_note = QLabel('Add CMC points first — CMC is ON.')
         self._sp_lock_note.setStyleSheet('font-size:11px;color:#f59e0b;margin-top:6px;')
@@ -454,12 +447,9 @@ class SettingsScreen(QWidget):
 
     def _build_master_card(self) -> QGroupBox:
         """Master RTD (Standard Reference Sensor) — lab-wide, set once here."""
-        box = QGroupBox('Master RTD  —  Standard Reference Sensor')
+        box = QGroupBox('Standard Reference Sensor')
         box.setObjectName('card')
-        box.setStyleSheet(
-            'QGroupBox{border:1px solid #3d7fff;}'
-            'QGroupBox::title{background:#ffffff;}'
-        )
+        box.setStyleSheet('QGroupBox{border:1px solid #d1d9e6;}')
         form = QFormLayout(box)
         form.setVerticalSpacing(8)
         form.setHorizontalSpacing(12)
@@ -483,13 +473,11 @@ class SettingsScreen(QWidget):
         box.setObjectName('card')
         box.setStyleSheet('QGroupBox{border:1px solid #d1d9e6;}')
         h = QHBoxLayout(box)
-        lbl = QLabel('PIN-protected: live instrument stability status.')
-        lbl.setStyleSheet('font-size:11px;color:#6b7a90;')
-        lbl.setWordWrap(True)
-        h.addWidget(lbl, 1)
+        h.addStretch(1)
         btn = make_button('Manufacturer Settings', 'ghost')
         btn.clicked.connect(self._open_manufacturer_settings)
         h.addWidget(btn)
+        h.addStretch(1)
         return box
 
     # ------------------------------------------------------------------
@@ -508,8 +496,8 @@ class SettingsScreen(QWidget):
 
         cmc_spin = QDoubleSpinBox()
         cmc_spin.setRange(0, 100)
-        cmc_spin.setDecimals(3)
-        cmc_spin.setSuffix(' ±')
+        cmc_spin.setDecimals(1)
+        cmc_spin.setSuffix(' ±°C')
         cmc_spin.setValue(cmc)
 
         del_btn = QPushButton('✕')
@@ -570,7 +558,7 @@ class SettingsScreen(QWidget):
         idx_lbl.setStyleSheet('color:#6b7a90;font-size:12px;')
 
         spin = QDoubleSpinBox()
-        spin.setRange(self._range_min.value(), self._range_max.value())
+        spin.setRange(max(0.0, self._range_min.value()), self._range_max.value())
         spin.setDecimals(1)
         spin.setValue(value)
         spin.setSuffix(' °C')
@@ -659,6 +647,27 @@ class SettingsScreen(QWidget):
         form.addRow('Model No',                 model_no)
         form.addRow('Serial No',                serial_no)
 
+        range_min_spin = _UnboundedSpinBox()
+        range_min_spin.setRange(-200, 999999)
+        range_min_spin.setDecimals(0)
+        range_min_spin.setSingleStep(100)
+        range_min_spin.setSuffix(' °C')
+        range_min_spin.setValue(self._range_min.value())
+        range_max_spin = _UnboundedSpinBox()
+        range_max_spin.setRange(-200, 999999)
+        range_max_spin.setDecimals(0)
+        range_max_spin.setSingleStep(100)
+        range_max_spin.setSuffix(' °C')
+        range_max_spin.setValue(self._range_max.value())
+
+        form.addRow('Dry Block Range Minimum', range_min_spin)
+        form.addRow('Dry Block Range Maximum', range_max_spin)
+
+        range_note = QLabel('Setpoints and CMC points must stay within this range.')
+        range_note.setWordWrap(True)
+        range_note.setStyleSheet('font-size:11px;color:#a0aec0;')
+        form.addRow('', range_note)
+
         note = QLabel(
             'Sent to the instrument as SOUR:STAB:LIM — the band SOUR:STAB:TEST? '
             'must stay within to report stable. Per the 9144 datasheet its own '
@@ -695,6 +704,10 @@ class SettingsScreen(QWidget):
         _refresh()
 
         def _on_save():
+            if range_min_spin.value() >= range_max_spin.value():
+                QMessageBox.warning(dlg, 'Invalid Range',
+                                     'Calibrator minimum must be less than maximum.')
+                return
             value = limit_spin.value()
             settings = self._store.load()
             settings['manufacturer'] = {
@@ -703,16 +716,38 @@ class SettingsScreen(QWidget):
                 'model_no': model_no.text().strip(),
                 'serial_no': serial_no.text().strip(),
             }
+            settings['calibrator_range'] = {
+                'min': range_min_spin.value(),
+                'max': range_max_spin.value(),
+            }
             self._store.save(settings)
-            if self._comm is not None and getattr(self._comm, 'is_connected', False):
-                ok = self._comm.set_stability_limit(value)
-                status.setText(
-                    f'Saved and pushed to instrument ({value:.2f} °C).' if ok else
-                    'Saved, but the instrument did not acknowledge the new value.'
-                )
-                status.setStyleSheet(f'font-size:11px;color:{"#22c55e" if ok else "#ef4444"};')
+            # Keep the main screen's range state (used by CMC/setpoint row
+            # bounds and Save validation) in sync with what was just saved
+            # here, and refresh any already-added rows the same way
+            # _on_range_changed always has.
+            self._range_min.setValue(range_min_spin.value())
+            self._range_max.setValue(range_max_spin.value())
+            self._on_range_changed()
+            # Only stability tolerance is a live instrument setting
+            # (SOUR:STAB:LIM) — reference equipment, model/serial, and the
+            # calibrator range are just saved for future report
+            # generation, so there's nothing to push for them. Re-push
+            # stability only when it actually changed, so saving an
+            # unrelated field (e.g. reference equipment) doesn't re-send
+            # the same value to the instrument every time.
+            if value != current_limit:
+                if self._comm is not None and getattr(self._comm, 'is_connected', False):
+                    ok = self._comm.set_stability_limit(value)
+                    status.setText(
+                        f'Saved and pushed to instrument ({value:.2f} °C).' if ok else
+                        'Saved, but the instrument did not acknowledge the new value.'
+                    )
+                    status.setStyleSheet(f'font-size:11px;color:{"#22c55e" if ok else "#ef4444"};')
+                else:
+                    status.setText('Saved. Will be pushed to the instrument on next connect.')
+                    status.setStyleSheet('font-size:11px;color:#6b7a90;')
             else:
-                status.setText('Saved. Will be pushed to the instrument on next connect.')
+                status.setText('Saved.')
                 status.setStyleSheet('font-size:11px;color:#6b7a90;')
 
         buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Close)

@@ -163,6 +163,11 @@ class SetupScreen(QWidget):
         note.setWordWrap(True)
         v.addWidget(note)
 
+        self._config_note = QLabel('')
+        self._config_note.setStyleSheet('font-size:11px;color:#f59e0b;margin-top:4px;')
+        self._config_note.setWordWrap(True)
+        v.addWidget(self._config_note)
+
         v.addStretch()
         return box
 
@@ -216,6 +221,29 @@ class SetupScreen(QWidget):
     # ------------------------------------------------------------------
     # Validation — Start button enabled only when mandatory fields filled
     # ------------------------------------------------------------------
+    @staticmethod
+    def _missing_requirements(settings: dict) -> list[str]:
+        """Config that must exist in Settings before a calibration can
+        start — printed on every certificate, so a report can never go
+        out without it. Reference equipment identifies which calibrator
+        unit produced the report; the lab profile is what brands the
+        certificate header (report_gen/pdf_report.py's _header())."""
+        missing = []
+
+        mfg = settings.get('manufacturer', {})
+        if not (mfg.get('reference_equipment', '').strip()
+                and mfg.get('model_no', '').strip()
+                and mfg.get('serial_no', '').strip()):
+            missing.append('Reference Equipment details (Settings → Manufacturer Settings)')
+
+        profile = settings.get('user_profile', {})
+        if not (profile.get('company_name', '').strip()
+                and profile.get('company_address', '').strip()
+                and profile.get('logo_path')):
+            missing.append('Company logo, name and address (Settings → User Settings)')
+
+        return missing
+
     def _check_valid(self) -> None:
         cert   = self._cert_input.text().strip()
         cust   = self._cust_input.text().strip()
@@ -224,7 +252,8 @@ class SetupScreen(QWidget):
         u_tag  = self._u_tag.text().strip()
         settings = self._store.load()
         sps = settings.get('setpoints', [])
-        ok = bool(cert and cust and by and u_ser and u_tag and sps)
+        missing = self._missing_requirements(settings)
+        ok = bool(cert and cust and by and u_ser and u_tag and sps and not missing)
         self._start_btn.setEnabled(ok)
 
     # ------------------------------------------------------------------
@@ -277,6 +306,11 @@ class SetupScreen(QWidget):
             self._sp_list_label.setText('  ·  '.join(f'{sp:.0f} °C' for sp in sps))
         else:
             self._sp_list_label.setText('No setpoints configured — set them up in Settings.')
+
+        missing = self._missing_requirements(settings)
+        self._config_note.setText(
+            'Required before starting: ' + '; '.join(missing) + '.' if missing else ''
+        )
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
