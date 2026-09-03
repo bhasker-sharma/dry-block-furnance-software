@@ -9,6 +9,7 @@ from reportlab.platypus import (
 )
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.enums import TA_CENTER, TA_RIGHT
+from reportlab.lib.utils import ImageReader
 
 from models.calibration_session import CalibrationSession, InstrumentInfo
 from db.settings_store import SettingsStore
@@ -141,10 +142,20 @@ def _header(settings: dict) -> Table:
     sub_style   = ParagraphStyle('ts', fontSize=9, textColor=GREY, leading=13,
                                  alignment=TA_RIGHT)
 
+    # Print height is fixed (the source logo's own height is fixed too —
+    # LOGO_HEIGHT, db/settings_store.py), so this row is always the same
+    # compact height no matter how wide the logo is: it can never crowd
+    # the company text beside it or the rule line below it. Width is
+    # derived from the logo's actual pixel aspect ratio so it never gets
+    # stretched (LOGO_MIN_WIDTH-LOGO_MAX_WIDTH is a 4:3-ish to 2:1 range).
+    logo_print_h = 16*mm
+    logo_max_w = 32*mm  # widest case: LOGO_MAX_WIDTH:LOGO_HEIGHT (2:1) at logo_print_h
     logo_cell = ''
     if logo_path and Path(logo_path).exists():
         try:
-            logo_cell = Image(logo_path, width=28*mm, height=14*mm)
+            px_w, px_h = ImageReader(logo_path).getSize()
+            logo_w = logo_print_h * px_w / px_h
+            logo_cell = Image(logo_path, width=logo_w, height=logo_print_h)
         except Exception:
             logo_cell = ''
 
@@ -157,10 +168,9 @@ def _header(settings: dict) -> Table:
     ]
 
     data = [[logo_cell, company_block, title_block]]
-    # Logo column widened to 28mm to match the Image's own width above —
-    # it was previously 26mm, 2mm narrower than the image, so the logo
-    # overflowed into what should have been the gap before company_block.
-    t = Table(data, colWidths=[30*mm, None, 90*mm])
+    # Logo column 2mm wider than the widest possible logo so it doesn't
+    # overflow into the gap before company_block (see RIGHTPADDING below).
+    t = Table(data, colWidths=[logo_max_w + 2*mm, None, 90*mm])
     t.setStyle(TableStyle([
         ('VALIGN',       (0,0), (-1,-1), 'MIDDLE'),
         ('LEFTPADDING',  (0,0), (-1,-1), 0),

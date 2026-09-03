@@ -36,10 +36,15 @@ SETTINGS_PATH = _app_root() / 'data' / 'settings.json'
 ASSETS_DIR = _app_root() / 'customer_assets'
 _LOGO_BASENAME = 'company_logo'
 
-# The logo must be exactly this size so future report layouts can place it
-# without per-file scaling logic. Enforced in the UI (QImage dimension
-# check) before save_logo() is ever called.
-REQUIRED_LOGO_SIZE = (300, 150)  # (width, height) in px
+# Height is fixed — only width is adjustable, from a 4:3-ish rectangle up
+# to a 2:1 banner — so the logo always prints at the same compact height
+# in the certificate header (report_gen/pdf_report.py's _header() derives
+# its print height directly from LOGO_HEIGHT), never crowding the text
+# beside it or the rule line below it. Enforced by the in-app crop tool
+# (ui/logo_crop_dialog.py) before save_logo() is ever called.
+LOGO_MIN_WIDTH = 200
+LOGO_MAX_WIDTH = 300
+LOGO_HEIGHT    = 150
 
 # SOUR:STAB:LIM range per the 9144 protocol (Digital Interface §6.4) —
 # values outside this go in the instrument's own error queue and are

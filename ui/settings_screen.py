@@ -1,3 +1,5 @@
+import os
+import tempfile
 from pathlib import Path
 
 from PyQt5.QtWidgets import (
@@ -8,12 +10,13 @@ from PyQt5.QtWidgets import (
     QPlainTextEdit
 )
 from PyQt5.QtCore import Qt, pyqtSignal, QTimer
-from PyQt5.QtGui import QValidator, QImage, QPixmap
+from PyQt5.QtGui import QValidator, QPixmap
 
 from ui.widgets import make_button
+from ui.logo_crop_dialog import LogoCropDialog
 from db.settings_store import (
     SettingsStore, STABILITY_LIMIT_MIN, STABILITY_LIMIT_MAX, clamp_stability_limit,
-    REQUIRED_LOGO_SIZE,
+    LOGO_MIN_WIDTH, LOGO_MAX_WIDTH, LOGO_HEIGHT,
 )
 
 MANUFACTURER_PIN = '123456'
@@ -178,10 +181,13 @@ class SettingsScreen(QWidget):
 
         # -- logo column --
         logo_col = QVBoxLayout()
-        req_w, req_h = REQUIRED_LOGO_SIZE
+        # Fixed cosmetic box for the settings card — independent of
+        # LOGO_MAX_WIDTH/HEIGHT (up to 300x200), which would make this
+        # card too large; the actual pixmap is fit into it below.
+        preview_box = 140
 
         self._logo_preview = QLabel('No logo\nuploaded')
-        self._logo_preview.setFixedSize(req_w // 2, req_h // 2)
+        self._logo_preview.setFixedSize(preview_box, preview_box)
         self._logo_preview.setAlignment(Qt.AlignCenter)
         self._logo_preview.setStyleSheet(
             'border:1px dashed #d1d9e6;color:#a0aec0;font-size:10px;'
@@ -198,7 +204,10 @@ class SettingsScreen(QWidget):
         logo_btns.addWidget(remove_btn)
         logo_col.addLayout(logo_btns)
 
-        logo_note = QLabel(f'Exactly {req_w} × {req_h} px.\n')
+        logo_note = QLabel(
+            f'Any image — crop to {LOGO_MIN_WIDTH}–{LOGO_MAX_WIDTH} px wide '
+            f'× {LOGO_HEIGHT} px tall on upload.'
+        )
         logo_note.setStyleSheet('font-size:10px;color:#a0aec0;')
         logo_note.setAlignment(Qt.AlignHCenter)
         logo_note.setWordWrap(True)
@@ -236,19 +245,25 @@ class SettingsScreen(QWidget):
         )
         if not path:
             return
-        img = QImage(path)
-        if img.isNull():
+        dlg = LogoCropDialog(path, LOGO_MIN_WIDTH, LOGO_MAX_WIDTH, LOGO_HEIGHT, self)
+        if dlg.exec_() != QDialog.Accepted:
+            return
+        cropped = dlg.cropped_image()
+        if cropped.isNull():
             QMessageBox.warning(self, 'Invalid Image', 'Could not read that image file.')
             return
-        req_w, req_h = REQUIRED_LOGO_SIZE
-        if img.width() != req_w or img.height() != req_h:
-            QMessageBox.warning(
-                self, 'Wrong Dimensions',
-                f'Logo must be exactly {req_w} × {req_h} px.\n'
-                f'Selected image is {img.width()} × {img.height()} px.'
-            )
-            return
-        self._u_logo_path = self._store.save_logo(path)
+
+        # save_logo() only moves bytes from a path (it deliberately has no
+        # Qt dependency), so the cropped-and-resized result is written to
+        # a throwaway temp file first, then handed off the same way a
+        # picked file always was.
+        fd, tmp_path = tempfile.mkstemp(suffix='.png')
+        os.close(fd)
+        try:
+            cropped.save(tmp_path, 'PNG')
+            self._u_logo_path = self._store.save_logo(tmp_path)
+        finally:
+            Path(tmp_path).unlink(missing_ok=True)
         self._refresh_logo_preview()
 
     def _on_remove_logo(self) -> None:
@@ -259,11 +274,11 @@ class SettingsScreen(QWidget):
         self._refresh_logo_preview()
 
     def _refresh_logo_preview(self) -> None:
-        req_w, req_h = REQUIRED_LOGO_SIZE
         if self._u_logo_path and Path(self._u_logo_path).exists():
             pix = QPixmap(self._u_logo_path)
+            box = self._logo_preview.width()
             self._logo_preview.setPixmap(
-                pix.scaled(req_w // 2, req_h // 2, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                pix.scaled(box, box, Qt.KeepAspectRatio, Qt.SmoothTransformation)
             )
         else:
             self._logo_preview.setPixmap(QPixmap())
